@@ -264,6 +264,38 @@ def test_implement_review_pr_and_failing_checks(tmp_path: Path) -> None:
     assert "Retry after reviewer routing" in auth_md.read_text(encoding="utf-8")
     assert "Retry after reviewer routing" not in api_md.read_text(encoding="utf-8")
 
+    # Owner with no matching implementer module: fail, do not fall back to queue-first.
+    repo_mismatch = tmp_path / "repo-mismatch"
+    ensure_git_repo(repo_mismatch)
+    (repo_mismatch / "macs_check").write_text("#!/bin/bash\nexit 1\n", encoding="utf-8")
+    (repo_mismatch / "macs_check").chmod(0o755)
+    paused_m = run(
+        goal="z [modules: api, auth] [check-owner: ghost]",
+        repo_path=repo_mismatch,
+        llm=HeuristicLlmPort(),
+        graph_runner=MacsGraphRunner(),
+    )
+    after_m = resume(
+        paused_m.run_id,
+        decision="approve",
+        repo_path=repo_mismatch,
+        llm=HeuristicLlmPort(),
+        graph_runner=MacsGraphRunner(),
+    )
+    assert after_m.status == "failed"
+    review_m = json.loads(
+        (paused_m.artifacts_dir / "review.json").read_text(encoding="utf-8")
+    )
+    assert review_m.get("repo_check_owner_task_ids") == []
+    state_m = json.loads(
+        (paused_m.artifacts_dir / "pipeline_state.json").read_text(encoding="utf-8")
+    )
+    assert "queue-first fallback" in (state_m.get("error") or "")
+    impl_m = json.loads(
+        (paused_m.artifacts_dir / "implementations.json").read_text(encoding="utf-8")
+    )
+    assert all(t.get("revision") == 1 for t in impl_m["tasks"])
+
     repo2 = tmp_path / "repo2"
     ensure_git_repo(repo2)
     (repo2 / "macs_check").write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")

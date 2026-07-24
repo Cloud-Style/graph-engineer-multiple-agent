@@ -63,7 +63,11 @@ def _task_ids_for_contract_owners(
     tasks: list[dict[str, Any]],
     contract: dict[str, Any] | None,
 ) -> list[str]:
-    """Map contract API owners to implementer task ids (ownership-based routing)."""
+    """Map contract API owners to implementer task ids (ownership-based routing).
+
+    Returns an empty list when no owner matches a task — callers must not
+    silently fall back to the first queue item.
+    """
     owners: list[str] = []
     seen: set[str] = set()
     for api in (contract or {}).get("apis") or []:
@@ -77,10 +81,7 @@ def _task_ids_for_contract_owners(
             seen.add(name)
             owners.append(name)
     by_module = {str(t.get("module")): str(t["id"]) for t in tasks if t.get("id")}
-    routed = [by_module[m] for m in owners if m in by_module]
-    if routed:
-        return routed
-    return [str(tasks[0]["id"])] if tasks else []
+    return [by_module[m] for m in owners if m in by_module]
 
 
 def _llm_json(llm: LlmPort, prompt: str) -> dict[str, Any]:
@@ -454,7 +455,21 @@ class MacsGraphRunner:
             )
             review["repo_check_owner_task_ids"] = repo_check_owner_task_ids
             _write_json(artifacts / "review.json", review)
-            if attempts < MAX_REVIEW_REROUTES and repo_check_owner_task_ids:
+            if not repo_check_owner_task_ids:
+                updated: PipelineState = {
+                    **state,
+                    "review": review,
+                    "status": STATUS_FAILED,
+                    "waiting_for_human": False,
+                    "phase": "review_failed",
+                    "error": (
+                        "review checks failed; no contract API owner maps to "
+                        "an implementer task (refusing queue-first fallback)"
+                    ),
+                }
+                _persist_status(artifacts, updated)
+                return updated
+            if attempts < MAX_REVIEW_REROUTES:
                 return {
                     **state,
                     "review": review,
@@ -468,7 +483,7 @@ class MacsGraphRunner:
                         "repo_check_owner_task_ids"
                     ),
                 }
-            updated: PipelineState = {
+            updated = {
                 **state,
                 "review": review,
                 "status": STATUS_FAILED,

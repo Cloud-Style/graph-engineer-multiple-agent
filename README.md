@@ -30,6 +30,7 @@ Goal cues for demos/tests:
 - `[modules: a, b, c]` — planned modules (v1 fan-out cap = 2; extras truncated)
 - `[conflict:api]` — force conflicting Login API shapes across modules
 - `[check-owner: auth]` — contract API owner used when routing failed checks
+  (if that owner matches no implementer module, the run fails — no queue-first fallback)
 - Repo optional `macs_check` script — reviewer exit code
 
 Artifacts live under `<repo>/runs/<run-id>/`.
