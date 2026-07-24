@@ -4,9 +4,9 @@
 
 **Blocked by:** 05 — 实现 worktree + Review + PR 草稿
 
-Status: ready-for-agent
+Status: done
 
-- [ ] PR 草稿就绪且检查/Review 通过后进入第二道人闸暂停态
-- [ ] 批准后 `RunResult` 为成功完成；驳回或未批准不得宣称成功
-- [ ] 不自动合入 main；合入/最终接受仍由人闸控制
-- [ ] `run` 接缝测试断言成功条件四件套缺一不可（草稿、检查、Review、第二人闸）
+- [x] PR 草稿就绪且检查/Review 通过后进入第二道人闸暂停态
+- [x] 批准后 `RunResult` 为成功完成；驳回或未批准不得宣称成功
+- [x] 不自动合入 main；合入/最终接受仍由人闸控制
+- [x] `run` 接缝测试断言成功条件四件套缺一不可（草稿、检查、Review、第二人闸）

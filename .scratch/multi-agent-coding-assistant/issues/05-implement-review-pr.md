@@ -4,10 +4,10 @@
 
 **Blocked by:** 04 — 设计冻结人闸（暂停/恢复）
 
-Status: ready-for-agent
+Status: done
 
-- [ ] 每个写任务使用隔离 worktree/分支；Implementer 不互相改对方分支
-- [ ] 只读探索可共享上下文，但不破坏写隔离约定
-- [ ] Reviewer 执行约定检查；失败路由回责任实现任务；Reviewer 不做功能级大重写
-- [ ] 产出 PR 草稿或等价可审 diff 包及元数据到 run 目录
-- [ ] `run` 接缝测试覆盖：检查通过得到 PR 草稿；检查失败则未达成功完成态
+- [x] 每个写任务使用隔离 worktree/分支；Implementer 不互相改对方分支
+- [x] 只读探索可共享上下文，但不破坏写隔离约定
+- [x] Reviewer 执行约定检查；失败路由回责任实现任务；Reviewer 不做功能级大重写
+- [x] 产出 PR 草稿或等价可审 diff 包及元数据到 run 目录
+- [x] `run` 接缝测试覆盖：检查通过得到 PR 草稿；检查失败则未达成功完成态

@@ -4,9 +4,9 @@
 
 **Blocked by:** 01 — `run` 骨架与接缝测试
 
-Status: ready-for-agent
+Status: done
 
-- [ ] Orchestrator 根据目标生成并落盘本次 work graph 摘要（含计划的模块/步骤与扇出上限意识）
-- [ ] Contracts 产出薄契约产物，含约定的结构化字段与非目标
-- [ ] Orchestrator 不撰写大段模块设计或生产代码；职责边界在产物上可分辨
-- [ ] 通过 `run` 接缝测试（桩 LLM）断言 work graph 摘要与契约文件存在且字段可被后续步骤消费
+- [x] Orchestrator 根据目标生成并落盘本次 work graph 摘要（含计划的模块/步骤与扇出上限意识）
+- [x] Contracts 产出薄契约产物，含约定的结构化字段与非目标
+- [x] Orchestrator 不撰写大段模块设计或生产代码；职责边界在产物上可分辨
+- [x] 通过 `run` 接缝测试（桩 LLM）断言 work graph 摘要与契约文件存在且字段可被后续步骤消费

@@ -4,7 +4,12 @@ version = "0.1.0"
 description = "Multi-agent coding assistant (graph-orchestrated)"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "langchain>=1.0,<2.0",
+    "langchain-core>=1.0,<2.0",
+    "langgraph>=1.0,<2.0",
+    "langsmith>=0.3.0",
+]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "mypy>=1.8"]
