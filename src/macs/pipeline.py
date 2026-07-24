@@ -358,16 +358,26 @@ class MacsGraphRunner:
                 task_id=task_id,
                 worktrees_root=worktrees_root,
             )
-            body = f"# {task.get('summary')}\n\nImplemented in isolated worktree.\n"
+            revision = int(task.get("revision") or 0) + 1
+            body = (
+                f"# {task.get('summary')}\n\n"
+                f"Implemented in isolated worktree.\n"
+                f"revision: {revision}\n"
+            )
             if attempt > 0:
-                body += f"\nRetry after reviewer routing (attempt {attempt}).\n"
+                body += f"Retry after reviewer routing (attempt {attempt}).\n"
             commit_file(
                 path,
                 f"macs_impl/{task.get('module', 'app')}.md",
                 body,
                 f"macs: {task_id}",
             )
-            updated[task_id] = {**task, "worktree": str(path), "branch": branch}
+            updated[task_id] = {
+                **task,
+                "worktree": str(path),
+                "branch": branch,
+                "revision": revision,
+            }
         realized = [updated[str(t.get("id"))] for t in base_tasks]
         _write_json(artifacts / "implementations.json", {"tasks": realized})
         _write_json(
@@ -412,21 +422,25 @@ class MacsGraphRunner:
         if not passed:
             attempts = int(state.get("review_attempts") or 0)
             tasks = list(state.get("tasks") or [])
-            # Repo-level check failure: attribute to the first task as the
-            # responsible implementer (v1; avoids rewriting every worktree).
-            responsible = [str(tasks[0]["id"])] if tasks else []
-            review["routed_back_to"] = responsible
+            # Repo-level macs_check has no per-module signal; v1 routes only the
+            # first task (sorted pipeline order) so other worktrees stay untouched.
+            repo_check_owner_task_ids = [str(tasks[0]["id"])] if tasks else []
+            review["routed_back_to"] = repo_check_owner_task_ids
+            review["repo_check_owner_task_ids"] = repo_check_owner_task_ids
             _write_json(artifacts / "review.json", review)
-            if attempts < MAX_REVIEW_REROUTES and responsible:
+            if attempts < MAX_REVIEW_REROUTES and repo_check_owner_task_ids:
                 return {
                     **state,
                     "review": review,
                     "review_attempts": attempts + 1,
-                    "retry_task_ids": responsible,
+                    "retry_task_ids": repo_check_owner_task_ids,
                     "phase": "implementers",
                     "status": STATUS_RUNNING,
                     "waiting_for_human": False,
-                    "error": "review checks failed; routed back to responsible implementer",
+                    "error": (
+                        "review checks failed; routed back to "
+                        "repo_check_owner_task_ids"
+                    ),
                 }
             updated: PipelineState = {
                 **state,

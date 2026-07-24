@@ -5,6 +5,21 @@ from __future__ import annotations
 from typing import Any
 
 
+def _conflict(
+    *,
+    field: str,
+    name: str,
+    modules: list[str],
+    detail: str,
+) -> dict[str, Any]:
+    return {
+        "field": field,
+        "name": name,
+        "modules": modules,
+        "detail": detail,
+    }
+
+
 def detect_conflicts(designs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Return conflict records for incompatible structured fields.
 
@@ -25,28 +40,30 @@ def detect_conflicts(designs: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 continue
             name = str(api.get("name", ""))
             shape = str(api.get("shape", ""))
+            module_list = [module] if module else []
+            display = name or "<unnamed>"
             if "owner" not in api or api.get("owner") in (None, ""):
                 conflicts.append(
-                    {
-                        "field": "apis",
-                        "name": name or "<unnamed>",
-                        "modules": [module] if module else [],
-                        "detail": f"API {name!r} in module {module!r} is missing owner",
-                    }
+                    _conflict(
+                        field="apis",
+                        name=display,
+                        modules=module_list,
+                        detail=f"API {name!r} in module {module!r} is missing owner",
+                    )
                 )
             else:
                 owner = str(api.get("owner"))
                 if owner not in modules:
                     conflicts.append(
-                        {
-                            "field": "apis",
-                            "name": name or "<unnamed>",
-                            "modules": [module] if module else [],
-                            "detail": (
+                        _conflict(
+                            field="apis",
+                            name=display,
+                            modules=module_list,
+                            detail=(
                                 f"API {name!r} owner {owner!r} is not among "
                                 f"modules {sorted(modules)}"
                             ),
-                        }
+                        )
                     )
             if not name:
                 continue
@@ -58,12 +75,12 @@ def detect_conflicts(designs: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         mods = sorted({module for module, _ in entries})
         conflicts.append(
-            {
-                "field": "apis",
-                "name": name,
-                "modules": mods,
-                "detail": f"API {name!r} has conflicting shapes: {sorted(shapes)}",
-            }
+            _conflict(
+                field="apis",
+                name=name,
+                modules=mods,
+                detail=f"API {name!r} has conflicting shapes: {sorted(shapes)}",
+            )
         )
 
     edges: set[tuple[str, str]] = set()
@@ -79,11 +96,11 @@ def detect_conflicts(designs: list[dict[str, Any]]) -> list[dict[str, Any]]:
             edges.add((src, dst))
             if (dst, src) in edges:
                 conflicts.append(
-                    {
-                        "field": "dependency_direction",
-                        "name": f"{src}<->{dst}",
-                        "modules": sorted({src, dst}),
-                        "detail": f"bidirectional dependency between {src!r} and {dst!r}",
-                    }
+                    _conflict(
+                        field="dependency_direction",
+                        name=f"{src}<->{dst}",
+                        modules=sorted({src, dst}),
+                        detail=f"bidirectional dependency between {src!r} and {dst!r}",
+                    )
                 )
     return conflicts

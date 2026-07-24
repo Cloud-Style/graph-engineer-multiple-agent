@@ -6,6 +6,9 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import Callable
+
+import pytest
 
 from macs.constants import GATE_DESIGN_FREEZE, GATE_MERGE, MAX_MODULE_FANOUT
 from macs.heuristic_llm import HeuristicLlmPort
@@ -173,7 +176,12 @@ def test_reconciler_conflict_and_no_conflict_paths(tmp_path: Path) -> None:
     owner_report = json.loads(
         (missing_owner.artifacts_dir / "conflicts.json").read_text(encoding="utf-8")
     )
-    assert any("missing owner" in c.get("detail", "") for c in owner_report["conflicts"])
+    assert any(
+        c.get("field") == "apis"
+        and "missing owner" in c.get("detail", "")
+        and c.get("modules") == ["app"]
+        for c in owner_report["conflicts"]
+    )
 
 
 def test_design_freeze_gate_approve_and_reject(tmp_path: Path) -> None:
@@ -240,12 +248,20 @@ def test_implement_review_pr_and_failing_checks(tmp_path: Path) -> None:
     assert after.waiting_for_human is False
     review = json.loads((paused.artifacts_dir / "review.json").read_text(encoding="utf-8"))
     assert review["passed"] is False
+    assert review.get("repo_check_owner_task_ids") == ["task-1-auth"]
     assert review.get("routed_back_to") == ["task-1-auth"]
     assert not (paused.artifacts_dir / "pr.json").exists()
     impl = json.loads(
         (paused.artifacts_dir / "implementations.json").read_text(encoding="utf-8")
     )
     assert len(impl["tasks"]) == 2
+    by_id = {t["id"]: t for t in impl["tasks"]}
+    assert by_id["task-1-auth"]["revision"] == 2
+    assert by_id["task-2-api"]["revision"] == 1
+    auth_md = Path(by_id["task-1-auth"]["worktree"]) / "macs_impl" / "auth.md"
+    api_md = Path(by_id["task-2-api"]["worktree"]) / "macs_impl" / "api.md"
+    assert "Retry after reviewer routing" in auth_md.read_text(encoding="utf-8")
+    assert "Retry after reviewer routing" not in api_md.read_text(encoding="utf-8")
 
     repo2 = tmp_path / "repo2"
     ensure_git_repo(repo2)
@@ -374,83 +390,66 @@ def test_cannot_complete_without_pr_bundle(tmp_path: Path) -> None:
     assert done.waiting_for_human is False
 
 
-def test_success_requires_each_done_piece(tmp_path: Path) -> None:
-    """Each of PR draft, checks, review, and merge-gate approval is required."""
+def _reach_merge_gate(repo: Path) -> tuple[str, Path]:
+    paused = run(
+        goal="piece [modules: app]",
+        repo_path=repo,
+        llm=HeuristicLlmPort(),
+        graph_runner=MacsGraphRunner(),
+    )
+    at_merge = resume(
+        paused.run_id,
+        decision="approve",
+        repo_path=repo,
+        llm=HeuristicLlmPort(),
+        graph_runner=MacsGraphRunner(),
+    )
+    assert at_merge.gate == GATE_MERGE
+    return paused.run_id, paused.artifacts_dir
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda state: state.__setitem__("pr", {}),
+        lambda state: state.__setitem__(
+            "pr", {**(state.get("pr") or {}), "checks_passed": False}
+        ),
+        lambda state: state.__setitem__(
+            "review", {**(state.get("review") or {}), "passed": False}
+        ),
+    ],
+    ids=["missing_pr", "checks_failed", "review_failed"],
+)
+def test_success_requires_each_done_piece(
+    tmp_path: Path, mutate: Callable[[dict[str, object]], None]
+) -> None:
     repo = tmp_path / "repo"
     ensure_git_repo(repo)
     (repo / "macs_check").write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
     (repo / "macs_check").chmod(0o755)
-
-    def reach_merge() -> tuple[str, Path]:
-        paused = run(
-            goal="piece [modules: app]",
-            repo_path=repo,
-            llm=HeuristicLlmPort(),
-            graph_runner=MacsGraphRunner(),
-        )
-        at_merge = resume(
-            paused.run_id,
-            decision="approve",
-            repo_path=repo,
-            llm=HeuristicLlmPort(),
-            graph_runner=MacsGraphRunner(),
-        )
-        assert at_merge.gate == GATE_MERGE
-        return paused.run_id, paused.artifacts_dir
-
-    # Missing PR draft only
-    run_id, art = reach_merge()
+    run_id, art = _reach_merge_gate(repo)
     state_path = art / "pipeline_state.json"
     state = json.loads(state_path.read_text(encoding="utf-8"))
-    state["pr"] = {}
+    mutate(state)
     state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
-    assert (
-        resume(
-            run_id,
-            decision="approve",
-            repo_path=repo,
-            llm=HeuristicLlmPort(),
-            graph_runner=MacsGraphRunner(),
-        ).status
-        == "failed"
+    result = resume(
+        run_id,
+        decision="approve",
+        repo_path=repo,
+        llm=HeuristicLlmPort(),
+        graph_runner=MacsGraphRunner(),
     )
+    assert result.status == "failed"
+    assert result.waiting_for_human is False
 
-    # Missing checks_passed on PR
-    run_id, art = reach_merge()
-    state_path = art / "pipeline_state.json"
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    state["pr"] = {**(state.get("pr") or {}), "checks_passed": False}
-    state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
-    assert (
-        resume(
-            run_id,
-            decision="approve",
-            repo_path=repo,
-            llm=HeuristicLlmPort(),
-            graph_runner=MacsGraphRunner(),
-        ).status
-        == "failed"
-    )
 
-    # Missing review.passed
-    run_id, art = reach_merge()
-    state_path = art / "pipeline_state.json"
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    state["review"] = {**(state.get("review") or {}), "passed": False}
-    state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
-    assert (
-        resume(
-            run_id,
-            decision="approve",
-            repo_path=repo,
-            llm=HeuristicLlmPort(),
-            graph_runner=MacsGraphRunner(),
-        ).status
-        == "failed"
-    )
-
-    # Missing second gate approval (still waiting, not completed)
-    run_id, art = reach_merge()
+def test_success_requires_second_gate_approval(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    ensure_git_repo(repo)
+    (repo / "macs_check").write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+    (repo / "macs_check").chmod(0o755)
+    _run_id, art = _reach_merge_gate(repo)
     waiting = json.loads((art / "status.json").read_text(encoding="utf-8"))
     assert waiting["waiting_for_human"] is True
     assert waiting["status"] == "waiting_for_human"
