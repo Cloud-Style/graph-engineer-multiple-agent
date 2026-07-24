@@ -1,10 +1,11 @@
-"""Replaceable ports for LLM and graph execution."""
+"""Replaceable ports for LLM, tools, and graph execution."""
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 
 @dataclass(frozen=True)
@@ -20,8 +21,13 @@ class LlmPort(Protocol):
         """Return a model completion for ``prompt``."""
 
 
+class ToolPort(Protocol):
+    def call(self, name: str, arguments: dict[str, Any]) -> str:
+        """Invoke a named tool; tests inject recording stubs instead of real tools."""
+
+
 class GraphRunner(Protocol):
-    def execute(self, ctx: RunContext, llm: LlmPort) -> None:
+    def execute(self, ctx: RunContext, llm: LlmPort, tools: ToolPort) -> None:
         """Run the (possibly stubbed) orchestration graph for this run."""
 
 
@@ -40,16 +46,41 @@ class RecordingLlmPort:
 
 
 @dataclass
+class RecordingToolPort:
+    """Test double that records tool calls and never touches the real repo tools."""
+
+    calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+
+    def call(self, name: str, arguments: dict[str, Any]) -> str:
+        self.calls.append((name, arguments))
+        return ""
+
+
+STUB_NODE_NAMES = (
+    "orchestrator",
+    "contracts",
+    "module_designers",
+    "reconciler",
+    "implementers",
+    "reviewer",
+)
+
+
+@dataclass
 class StubGraphRunner:
-    """Ticket-01 stub: writes minimal status and does not call the LLM."""
+    """Ticket-01 stub: records stub nodes, writes status, ignores LLM/tools."""
 
     calls: int = 0
 
-    def execute(self, ctx: RunContext, llm: LlmPort) -> None:
-        del llm  # stub graph intentionally ignores the model
+    def execute(self, ctx: RunContext, llm: LlmPort, tools: ToolPort) -> None:
+        del llm, tools
         self.calls += 1
-        status_path = ctx.artifacts_dir / "status.json"
-        status_path.write_text(
-            '{"status":"completed","waiting_for_human":false}\n',
+        payload = {
+            "status": "completed",
+            "waiting_for_human": False,
+            "stub_nodes": list(STUB_NODE_NAMES),
+        }
+        (ctx.artifacts_dir / "status.json").write_text(
+            json.dumps(payload) + "\n",
             encoding="utf-8",
         )

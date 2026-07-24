@@ -4,7 +4,7 @@
 
 **Blocked by:** 01 — `run` 骨架与接缝测试
 
-**Status:** ready-for-agent
+Status: ready-for-agent
 
 - [ ] Orchestrator 根据目标生成并落盘本次 work graph 摘要（含计划的模块/步骤与扇出上限意识）
 - [ ] Contracts 产出薄契约产物，含约定的结构化字段与非目标

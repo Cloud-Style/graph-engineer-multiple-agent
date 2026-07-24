@@ -7,7 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from macs.ports import RecordingLlmPort, StubGraphRunner
+from macs.ports import RecordingLlmPort, RecordingToolPort, StubGraphRunner
 from macs.run import run
 
 
@@ -16,23 +16,35 @@ def test_run_creates_artifacts_and_returns_result(tmp_path: Path) -> None:
     repo.mkdir()
 
     llm = RecordingLlmPort()
+    tools = RecordingToolPort()
     graph = StubGraphRunner()
 
     result = run(
         goal="add a hello endpoint",
         repo_path=repo,
         llm=llm,
+        tools=tools,
         graph_runner=graph,
     )
 
     assert result.run_id
     assert result.artifacts_dir == repo / "runs" / result.run_id
     assert result.artifacts_dir.is_dir()
-    assert (result.artifacts_dir / "status.json").is_file()
+    status = json.loads((result.artifacts_dir / "status.json").read_text(encoding="utf-8"))
+    assert status["status"] == "completed"
+    assert status["stub_nodes"] == [
+        "orchestrator",
+        "contracts",
+        "module_designers",
+        "reconciler",
+        "implementers",
+        "reviewer",
+    ]
     assert result.status == "completed"
     assert result.waiting_for_human is False
     assert graph.calls == 1
-    assert llm.calls == 0  # stub graph does not need the model
+    assert llm.calls == 0
+    assert tools.calls == []
 
 
 def test_cli_run_against_repo_path(tmp_path: Path) -> None:

@@ -4,7 +4,7 @@
 
 **Blocked by:** 05 — 实现 worktree + Review + PR 草稿
 
-**Status:** ready-for-agent
+Status: ready-for-agent
 
 - [ ] PR 草稿就绪且检查/Review 通过后进入第二道人闸暂停态
 - [ ] 批准后 `RunResult` 为成功完成；驳回或未批准不得宣称成功

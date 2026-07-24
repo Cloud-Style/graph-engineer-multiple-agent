@@ -4,7 +4,7 @@
 
 **Blocked by:** 04 — 设计冻结人闸（暂停/恢复）
 
-**Status:** ready-for-agent
+Status: ready-for-agent
 
 - [ ] 每个写任务使用隔离 worktree/分支；Implementer 不互相改对方分支
 - [ ] 只读探索可共享上下文，但不破坏写隔离约定

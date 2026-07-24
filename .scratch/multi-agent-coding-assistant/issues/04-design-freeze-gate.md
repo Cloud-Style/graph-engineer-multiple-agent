@@ -4,7 +4,7 @@
 
 **Blocked by:** 03 — 模块设计扇出 + Reconciler（含冲突）
 
-**Status:** ready-for-agent
+Status: ready-for-agent
 
 - [ ] 设计冻结后进入可序列化的暂停态，产物与状态可从 run 目录/结果中读出「等人批准」
 - [ ] 支持批准后恢复继续、驳回后以失败/中止结束

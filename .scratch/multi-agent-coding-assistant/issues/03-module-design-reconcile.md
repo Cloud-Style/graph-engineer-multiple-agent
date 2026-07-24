@@ -4,7 +4,7 @@
 
 **Blocked by:** 02 — 编排 + 契约垂直切片
 
-**Status:** ready-for-agent
+Status: ready-for-agent
 
 - [ ] Module-Designers 按契约中的模块列表扇出，每模块一份设计产物，且不修改目标仓生产代码
 - [ ] v1 模块扇出有明确上限，超出策略可测（截断、拒绝或升级——行为固定并写清）

@@ -7,7 +7,15 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from macs.ports import GraphRunner, LlmPort, RecordingLlmPort, RunContext, StubGraphRunner
+from macs.ports import (
+    GraphRunner,
+    LlmPort,
+    RecordingLlmPort,
+    RecordingToolPort,
+    RunContext,
+    StubGraphRunner,
+    ToolPort,
+)
 
 
 @dataclass(frozen=True)
@@ -23,12 +31,13 @@ def run(
     *,
     repo_path: Path | None = None,
     llm: LlmPort | None = None,
+    tools: ToolPort | None = None,
     graph_runner: GraphRunner | None = None,
 ) -> RunResult:
     """Execute one assistant run against a target repository.
 
-    Defaults to the current working directory. Callers may inject LLM and
-    graph ports (tests use stubs that never call a real model).
+    Defaults to the current working directory. Callers may inject LLM, tool,
+    and graph ports (tests use stubs that never call a real model or tools).
     """
     target = (repo_path or Path.cwd()).resolve()
     if not target.is_dir():
@@ -39,6 +48,7 @@ def run(
     artifacts_dir.mkdir(parents=True, exist_ok=False)
 
     active_llm: LlmPort = llm if llm is not None else RecordingLlmPort()
+    active_tools: ToolPort = tools if tools is not None else RecordingToolPort()
     active_graph: GraphRunner = (
         graph_runner if graph_runner is not None else StubGraphRunner()
     )
@@ -49,7 +59,7 @@ def run(
         repo_path=target,
         artifacts_dir=artifacts_dir,
     )
-    active_graph.execute(ctx, active_llm)
+    active_graph.execute(ctx, active_llm, active_tools)
 
     status_path = artifacts_dir / "status.json"
     status = "completed"

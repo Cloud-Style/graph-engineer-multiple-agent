@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** done
+Status: done
 
 - [x] 提供库入口 `run` 与薄 CLI 包装，默认目标仓为当前工作目录（可指定路径）
 - [x] 每次调用生成唯一 `run-id`，并在 `runs/<run-id>/` 落下可检查的最小产物/状态痕迹
