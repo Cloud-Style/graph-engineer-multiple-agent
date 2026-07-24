@@ -9,6 +9,25 @@ uv venv .venv && source .venv/bin/activate
 uv pip install -e ".[dev]"
 ```
 
+## LLM configuration
+
+Set env vars before `macs run` / `macs resume`:
+
+| Variable | Required | Default |
+|---|---|---|
+| `API_KEY` | for real LLM | — (if unset, uses offline heuristic) |
+| `BASE_URL` | no | `https://api.deepseek.com` |
+| `MODEL` | no | `deepseek-chat` |
+
+```bash
+export API_KEY=sk-...
+# optional:
+# export BASE_URL=https://api.deepseek.com
+# export MODEL=deepseek-chat
+
+macs run "做个猜数字游戏" --repo ./test-project
+```
+
 ## Usage
 
 ```bash
@@ -25,7 +44,9 @@ macs resume <run_id> --repo /path/to/repo --approve
 macs run "ping" --repo /path/to/repo --stub-graph
 ```
 
-Goal cues for demos/tests:
+Plain local folders work; git is auto-initialized when implementers need worktrees.
+
+Goal cues for demos/tests (mainly for offline heuristic):
 
 - `[modules: a, b, c]` — planned modules (v1 fan-out cap = 2; extras truncated)
 - `[conflict:api]` — force conflicting Login API shapes across modules

@@ -210,7 +210,14 @@ class MacsGraphRunner:
         artifacts = Path(state["artifacts_dir"])
         planned = _llm_json(
             self._llm,
-            f"STAGE=orchestrator\nGOAL={state['goal']}\n",
+            (
+                "STAGE=orchestrator\n"
+                f"GOAL={state['goal']}\n"
+                "Return JSON: "
+                '{"modules":["name",...],"steps":["contracts","module_designers",'
+                '"reconciler","implementers","reviewer"]}. '
+                "Pick 1-2 modules that fit the goal.\n"
+            ),
         )
         modules = list(planned.get("modules") or ["app"])
         truncated = modules[MAX_MODULE_FANOUT:]
@@ -237,7 +244,15 @@ class MacsGraphRunner:
         artifacts = Path(state["artifacts_dir"])
         contract = _llm_json(
             self._llm,
-            f"STAGE=contracts\nGOAL={state['goal']}\n",
+            (
+                "STAGE=contracts\n"
+                f"GOAL={state['goal']}\n"
+                "Return JSON with keys: boundaries (string[]), apis "
+                '([{name,owner,shape}]), entities ([{name,fields}]), '
+                "errors ([{code}]), dependency_direction ([{from,to}]), "
+                "non_goals (string[]), modules (string[]). "
+                "Keep it thin; owner must be one of the planned modules.\n"
+            ),
         )
         modules = list((state.get("work_graph") or {}).get("modules") or contract.get("modules") or ["app"])
         contract["modules"] = modules
@@ -256,7 +271,16 @@ class MacsGraphRunner:
         for module in modules:
             design = _llm_json(
                 self._llm,
-                f"STAGE=module_design\nMODULE={module}\nGOAL={state['goal']}\n",
+                (
+                    "STAGE=module_design\n"
+                    f"MODULE={module}\n"
+                    f"GOAL={state['goal']}\n"
+                    "Return JSON: "
+                    '{"module":"...","apis":[{"name","owner","shape"}],'
+                    '"entities":[{"name","fields"}],"errors":[{"code"}],'
+                    '"dependency_direction":[{"from","to"}]}. '
+                    f"Design only module {module!r}; set api.owner to that module.\n"
+                ),
             )
             design["module"] = module
             _write_json(designs_dir / f"{module}.json", design)
@@ -281,9 +305,13 @@ class MacsGraphRunner:
         else:
             proposal = _llm_json(
                 self._llm,
-                "STAGE=reconcile\nGOAL={}\nCONFLICTS={}\n".format(
-                    state["goal"],
-                    json.dumps(conflicts),
+                (
+                    "STAGE=reconcile\n"
+                    f"GOAL={state['goal']}\n"
+                    f"CONFLICTS={json.dumps(conflicts)}\n"
+                    "Return JSON: "
+                    '{"resolved":true|false,"apis":[{"name","owner","shape"}],'
+                    '"notes":"..."}. Prefer resolving when possible.\n'
                 ),
             )
             frozen = {

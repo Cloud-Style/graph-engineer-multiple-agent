@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Literal
 
 from macs.constants import STATUS_COMPLETED, STATUS_WAITING
-from macs.heuristic_llm import HeuristicLlmPort
+from macs.openai_llm import llm_from_env
 from macs.pipeline import MacsGraphRunner
 from macs.ports import (
     GraphRunner,
@@ -71,7 +71,7 @@ def run(
     artifacts_dir = target / "runs" / run_id
     artifacts_dir.mkdir(parents=True, exist_ok=False)
 
-    active_llm: LlmPort = llm if llm is not None else HeuristicLlmPort()
+    active_llm: LlmPort = llm if llm is not None else llm_from_env()
     active_tools: ToolPort = tools if tools is not None else RecordingToolPort()
     active_graph: GraphRunner = (
         graph_runner if graph_runner is not None else MacsGraphRunner()
@@ -108,7 +108,7 @@ def resume(
     state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
 
     goal = str(state.get("goal") or "")
-    active_llm: LlmPort = llm if llm is not None else HeuristicLlmPort()
+    active_llm: LlmPort = llm if llm is not None else llm_from_env()
     active_tools: ToolPort = tools if tools is not None else RecordingToolPort()
     active_graph: GraphRunner = (
         graph_runner if graph_runner is not None else MacsGraphRunner()
