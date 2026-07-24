@@ -195,6 +195,15 @@ class MacsGraphRunner:
         self, state: PipelineState
     ) -> Literal["orchestrator", "handle_design_decision", "handle_merge_decision", "end"]:
         phase = state.get("phase", "start")
+        # Terminal / unknown phases must NOT fall through to re-planning.
+        if phase in {
+            "completed",
+            "rejected_design",
+            "rejected_merge",
+            "review_failed",
+            "failed",
+        }:
+            return "end"
         if phase in {"start", "orchestrator"}:
             return "orchestrator"
         if phase == "design_freeze" and state.get("decision"):
@@ -203,7 +212,7 @@ class MacsGraphRunner:
             return "handle_merge_decision"
         if phase in {"design_freeze", "merge"} and not state.get("decision"):
             return "end"
-        return "orchestrator"
+        return "end"
 
     def _orchestrator(self, state: PipelineState) -> PipelineState:
         assert self._llm is not None

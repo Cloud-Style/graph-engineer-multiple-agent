@@ -487,3 +487,52 @@ def test_success_requires_second_gate_approval(tmp_path: Path) -> None:
     assert waiting["waiting_for_human"] is True
     assert waiting["status"] == "waiting_for_human"
     assert waiting["gate"] == GATE_MERGE
+
+
+def test_resume_after_completed_does_not_replan(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    ensure_git_repo(repo)
+    (repo / "macs_check").write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+    (repo / "macs_check").chmod(0o755)
+
+    paused = run(
+        goal="done [modules: app]",
+        repo_path=repo,
+        llm=HeuristicLlmPort(),
+        graph_runner=MacsGraphRunner(),
+    )
+    resume(
+        paused.run_id,
+        decision="approve",
+        repo_path=repo,
+        llm=HeuristicLlmPort(),
+        graph_runner=MacsGraphRunner(),
+    )
+    done = resume(
+        paused.run_id,
+        decision="approve",
+        repo_path=repo,
+        llm=HeuristicLlmPort(),
+        graph_runner=MacsGraphRunner(),
+    )
+    assert done.status == "completed"
+    work_graph_before = (paused.artifacts_dir / "work_graph.json").read_text(
+        encoding="utf-8"
+    )
+    again = resume(
+        paused.run_id,
+        decision="approve",
+        repo_path=repo,
+        llm=HeuristicLlmPort(),
+        graph_runner=MacsGraphRunner(),
+    )
+    assert again.status == "completed"
+    assert again.waiting_for_human is False
+    work_graph_after = (paused.artifacts_dir / "work_graph.json").read_text(
+        encoding="utf-8"
+    )
+    assert work_graph_after == work_graph_before
+    state = json.loads(
+        (paused.artifacts_dir / "pipeline_state.json").read_text(encoding="utf-8")
+    )
+    assert state.get("phase") == "completed"
