@@ -14,9 +14,11 @@ from macs.constants import (
     GATE_DESIGN_FREEZE,
     GATE_MERGE,
     MAX_MODULE_FANOUT,
+    MAX_REVIEW_REROUTES,
     STATUS_COMPLETED,
     STATUS_FAILED,
     STATUS_REJECTED,
+    STATUS_RUNNING,
     STATUS_WAITING,
 )
 from macs.goal_parse import wants_failing_checks
@@ -45,6 +47,7 @@ class PipelineState(TypedDict, total=False):
     error: str
     merged_to_main: bool
     review_attempts: int
+    retry_task_ids: list[str]
 
 
 def _write_json(path: Path, payload: dict[str, Any] | list[Any]) -> None:
@@ -337,10 +340,17 @@ class MacsGraphRunner:
         artifacts = Path(state["artifacts_dir"])
         repo = Path(state["repo_path"])
         ensure_git_repo(repo)
-        tasks = list(state.get("tasks") or [])
+        base_tasks = list(state.get("tasks") or [])
+        retry_ids = {str(x) for x in (state.get("retry_task_ids") or [])}
+        targets = (
+            [t for t in base_tasks if str(t.get("id")) in retry_ids]
+            if retry_ids
+            else base_tasks
+        )
         worktrees_root = artifacts / "worktrees"
-        realized: list[dict[str, Any]] = []
-        for task in tasks:
+        updated = {str(t.get("id")): dict(t) for t in base_tasks}
+        attempt = int(state.get("review_attempts") or 0)
+        for task in targets:
             task_id = str(task["id"])
             path, branch = create_task_worktree(
                 repo,
@@ -348,24 +358,30 @@ class MacsGraphRunner:
                 task_id=task_id,
                 worktrees_root=worktrees_root,
             )
-            attempt = int(state.get("review_attempts") or 0)
             body = f"# {task.get('summary')}\n\nImplemented in isolated worktree.\n"
             if attempt > 0:
-                body += f"\n## Fix attempt {attempt}\nRouted back from reviewer.\n"
+                body += f"\nRetry after reviewer routing (attempt {attempt}).\n"
             commit_file(
                 path,
                 f"macs_impl/{task.get('module', 'app')}.md",
                 body,
-                f"macs: {task_id} attempt={attempt}",
+                f"macs: {task_id}",
             )
-            realized.append({**task, "worktree": str(path), "branch": branch})
+            updated[task_id] = {**task, "worktree": str(path), "branch": branch}
+        realized = [updated[str(t.get("id"))] for t in base_tasks]
         _write_json(artifacts / "implementations.json", {"tasks": realized})
-        # Read-only shared note (does not break write isolation)
         _write_json(
             artifacts / "read_only_context.json",
             {"note": "shared read-only exploration context", "goal": state["goal"]},
         )
-        return {**state, "tasks": realized, "phase": "reviewer"}
+        return {
+            **state,
+            "tasks": realized,
+            "retry_task_ids": [],
+            "phase": "reviewer",
+            "status": STATUS_RUNNING,
+            "waiting_for_human": False,
+        }
 
     def _reviewer(self, state: PipelineState) -> PipelineState:
         artifacts = Path(state["artifacts_dir"])
@@ -388,29 +404,30 @@ class MacsGraphRunner:
         elif wants_failing_checks(state["goal"]):
             passed = False
             detail = "goal requested failing checks"
-        review = {
+        review: dict[str, Any] = {
             "passed": passed,
             "detail": detail,
             "rewrote_features": False,
         }
-        _write_json(artifacts / "review.json", review)
         if not passed:
             attempts = int(state.get("review_attempts") or 0)
-            task_ids = [str(t.get("id")) for t in state.get("tasks") or []]
-            if attempts < 1:
-                review["routed_back_to"] = task_ids
-                _write_json(artifacts / "review.json", review)
+            tasks = list(state.get("tasks") or [])
+            # Repo-level check failure: attribute to the first task as the
+            # responsible implementer (v1; avoids rewriting every worktree).
+            responsible = [str(tasks[0]["id"])] if tasks else []
+            review["routed_back_to"] = responsible
+            _write_json(artifacts / "review.json", review)
+            if attempts < MAX_REVIEW_REROUTES and responsible:
                 return {
                     **state,
                     "review": review,
                     "review_attempts": attempts + 1,
+                    "retry_task_ids": responsible,
                     "phase": "implementers",
-                    "status": STATUS_WAITING,
+                    "status": STATUS_RUNNING,
                     "waiting_for_human": False,
-                    "error": "review checks failed; routed back to implementers",
+                    "error": "review checks failed; routed back to responsible implementer",
                 }
-            review["routed_back_to"] = task_ids
-            _write_json(artifacts / "review.json", review)
             updated: PipelineState = {
                 **state,
                 "review": review,
@@ -421,6 +438,7 @@ class MacsGraphRunner:
             }
             _persist_status(artifacts, updated)
             return updated
+        _write_json(artifacts / "review.json", review)
         pr = {
             "title": f"macs: {state['goal'][:60]}",
             "branches": [str(t.get("branch")) for t in state.get("tasks") or []],

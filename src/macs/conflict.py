@@ -11,7 +11,8 @@ def detect_conflicts(designs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     Detects:
     - same API ``name`` with differing ``shape`` (同名异义)
     - opposing dependency edges (双向依赖)
-    - APIs whose ``owner`` is missing from the design module set (缺 owner)
+    - API entries missing an ``owner`` field (缺 owner)
+    - API ``owner`` not in the design module set (未知 owner)
     """
     modules = {str(d.get("module", "")) for d in designs if d.get("module")}
     conflicts: list[dict[str, Any]] = []
@@ -24,16 +25,29 @@ def detect_conflicts(designs: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 continue
             name = str(api.get("name", ""))
             shape = str(api.get("shape", ""))
-            owner = str(api.get("owner") or module)
-            if name and owner and owner not in modules:
+            if "owner" not in api or api.get("owner") in (None, ""):
                 conflicts.append(
                     {
                         "field": "apis",
-                        "name": name,
-                        "modules": [module],
-                        "detail": f"API {name!r} owner {owner!r} is not among modules {sorted(modules)}",
+                        "name": name or "<unnamed>",
+                        "modules": [module] if module else [],
+                        "detail": f"API {name!r} in module {module!r} is missing owner",
                     }
                 )
+            else:
+                owner = str(api.get("owner"))
+                if owner not in modules:
+                    conflicts.append(
+                        {
+                            "field": "apis",
+                            "name": name or "<unnamed>",
+                            "modules": [module] if module else [],
+                            "detail": (
+                                f"API {name!r} owner {owner!r} is not among "
+                                f"modules {sorted(modules)}"
+                            ),
+                        }
+                    )
             if not name:
                 continue
             by_api.setdefault(name, []).append((module, shape))

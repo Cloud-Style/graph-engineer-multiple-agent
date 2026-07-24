@@ -164,6 +164,17 @@ def test_reconciler_conflict_and_no_conflict_paths(tmp_path: Path) -> None:
     assert frozen3.get("escalated") is True
     assert escalated.gate == GATE_DESIGN_FREEZE
 
+    missing_owner = run(
+        goal="own [modules: app] [missing-owner]",
+        repo_path=repo,
+        llm=HeuristicLlmPort(),
+        graph_runner=MacsGraphRunner(),
+    )
+    owner_report = json.loads(
+        (missing_owner.artifacts_dir / "conflicts.json").read_text(encoding="utf-8")
+    )
+    assert any("missing owner" in c.get("detail", "") for c in owner_report["conflicts"])
+
 
 def test_design_freeze_gate_approve_and_reject(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
@@ -213,7 +224,7 @@ def test_implement_review_pr_and_failing_checks(tmp_path: Path) -> None:
     (repo / "macs_check").chmod(0o755)
 
     paused = run(
-        goal="x [modules: app]",
+        goal="x [modules: auth, api]",
         repo_path=repo,
         llm=HeuristicLlmPort(),
         graph_runner=MacsGraphRunner(),
@@ -229,8 +240,12 @@ def test_implement_review_pr_and_failing_checks(tmp_path: Path) -> None:
     assert after.waiting_for_human is False
     review = json.loads((paused.artifacts_dir / "review.json").read_text(encoding="utf-8"))
     assert review["passed"] is False
-    assert review.get("routed_back_to"), "failed review must route back to implementer tasks"
+    assert review.get("routed_back_to") == ["task-1-auth"]
     assert not (paused.artifacts_dir / "pr.json").exists()
+    impl = json.loads(
+        (paused.artifacts_dir / "implementations.json").read_text(encoding="utf-8")
+    )
+    assert len(impl["tasks"]) == 2
 
     repo2 = tmp_path / "repo2"
     ensure_git_repo(repo2)
@@ -343,7 +358,6 @@ def test_cannot_complete_without_pr_bundle(tmp_path: Path) -> None:
         graph_runner=MacsGraphRunner(),
     )
     assert at_merge.gate == GATE_MERGE
-    # Strip PR/review success markers before final approve
     state_path = paused.artifacts_dir / "pipeline_state.json"
     state = json.loads(state_path.read_text(encoding="utf-8"))
     state["pr"] = {}
@@ -358,3 +372,86 @@ def test_cannot_complete_without_pr_bundle(tmp_path: Path) -> None:
     )
     assert done.status == "failed"
     assert done.waiting_for_human is False
+
+
+def test_success_requires_each_done_piece(tmp_path: Path) -> None:
+    """Each of PR draft, checks, review, and merge-gate approval is required."""
+    repo = tmp_path / "repo"
+    ensure_git_repo(repo)
+    (repo / "macs_check").write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+    (repo / "macs_check").chmod(0o755)
+
+    def reach_merge() -> tuple[str, Path]:
+        paused = run(
+            goal="piece [modules: app]",
+            repo_path=repo,
+            llm=HeuristicLlmPort(),
+            graph_runner=MacsGraphRunner(),
+        )
+        at_merge = resume(
+            paused.run_id,
+            decision="approve",
+            repo_path=repo,
+            llm=HeuristicLlmPort(),
+            graph_runner=MacsGraphRunner(),
+        )
+        assert at_merge.gate == GATE_MERGE
+        return paused.run_id, paused.artifacts_dir
+
+    # Missing PR draft only
+    run_id, art = reach_merge()
+    state_path = art / "pipeline_state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["pr"] = {}
+    state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    assert (
+        resume(
+            run_id,
+            decision="approve",
+            repo_path=repo,
+            llm=HeuristicLlmPort(),
+            graph_runner=MacsGraphRunner(),
+        ).status
+        == "failed"
+    )
+
+    # Missing checks_passed on PR
+    run_id, art = reach_merge()
+    state_path = art / "pipeline_state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["pr"] = {**(state.get("pr") or {}), "checks_passed": False}
+    state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    assert (
+        resume(
+            run_id,
+            decision="approve",
+            repo_path=repo,
+            llm=HeuristicLlmPort(),
+            graph_runner=MacsGraphRunner(),
+        ).status
+        == "failed"
+    )
+
+    # Missing review.passed
+    run_id, art = reach_merge()
+    state_path = art / "pipeline_state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["review"] = {**(state.get("review") or {}), "passed": False}
+    state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    assert (
+        resume(
+            run_id,
+            decision="approve",
+            repo_path=repo,
+            llm=HeuristicLlmPort(),
+            graph_runner=MacsGraphRunner(),
+        ).status
+        == "failed"
+    )
+
+    # Missing second gate approval (still waiting, not completed)
+    run_id, art = reach_merge()
+    waiting = json.loads((art / "status.json").read_text(encoding="utf-8"))
+    assert waiting["waiting_for_human"] is True
+    assert waiting["status"] == "waiting_for_human"
+    assert waiting["gate"] == GATE_MERGE

@@ -20,3 +20,11 @@ def wants_api_conflict(goal: str) -> bool:
 
 def wants_failing_checks(goal: str) -> bool:
     return "[fail-checks]" in goal.lower()
+
+
+def wants_missing_owner(goal: str) -> bool:
+    return "[missing-owner]" in goal.lower()
+
+
+def wants_escalate_conflict(goal: str) -> bool:
+    return "[escalate:conflict]" in goal.lower()

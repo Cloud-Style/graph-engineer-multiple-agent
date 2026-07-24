@@ -6,7 +6,12 @@ import json
 import re
 from dataclasses import dataclass
 
-from macs.goal_parse import modules_from_goal, wants_api_conflict
+from macs.goal_parse import (
+    modules_from_goal,
+    wants_api_conflict,
+    wants_escalate_conflict,
+    wants_missing_owner,
+)
 
 
 def _goal_from_prompt(prompt: str) -> str:
@@ -57,17 +62,20 @@ class HeuristicLlmPort:
             shape = "POST /login"
             if wants_api_conflict(goal) and module != modules_from_goal(goal)[0]:
                 shape = "POST /signin"
+            api: dict[str, str] = {"name": "Login", "shape": shape}
+            if not wants_missing_owner(goal):
+                api["owner"] = module
             return json.dumps(
                 {
                     "module": module,
-                    "apis": [{"name": "Login", "shape": shape}],
+                    "apis": [api],
                     "entities": [{"name": "User", "fields": ["id", "email"]}],
                     "errors": [{"code": "AUTH_DENIED"}],
                     "dependency_direction": [],
                 }
             )
         if "STAGE=reconcile" in prompt:
-            if "[escalate:conflict]" in goal.lower():
+            if wants_escalate_conflict(goal):
                 return json.dumps(
                     {
                         "resolved": False,
@@ -78,7 +86,7 @@ class HeuristicLlmPort:
             return json.dumps(
                 {
                     "resolved": True,
-                    "apis": [{"name": "Login", "shape": "POST /login"}],
+                    "apis": [{"name": "Login", "owner": "auth", "shape": "POST /login"}],
                     "notes": "Prefer canonical POST /login",
                 }
             )
