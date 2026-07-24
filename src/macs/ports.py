@@ -14,6 +14,8 @@ class RunContext:
     goal: str
     repo_path: Path
     artifacts_dir: Path
+    auto_approve: bool = False
+    decision_source: str = "human"
 
 
 class LlmPort(Protocol):

@@ -43,6 +43,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Use ticket-01 stub graph (immediate completed status)",
     )
+    run_parser.add_argument(
+        "--auto",
+        action="store_true",
+        help="Auto-approve design-freeze and merge gates (or set MACS_AUTO_APPROVE=1)",
+    )
 
     resume_parser = sub.add_parser("resume", help="Resume a run paused at a human gate")
     resume_parser.add_argument("run_id", help="Run id under <repo>/runs/<run_id>")
@@ -63,7 +68,12 @@ def main(argv: list[str] | None = None) -> int:
             from macs.ports import StubGraphRunner
 
             graph_runner = StubGraphRunner()
-        result = run(args.goal, repo_path=args.repo, graph_runner=graph_runner)
+        result = run(
+            args.goal,
+            repo_path=args.repo,
+            graph_runner=graph_runner,
+            auto_approve=True if args.auto else None,
+        )
         _print_result(result)
         return 0
     if args.command == "resume":

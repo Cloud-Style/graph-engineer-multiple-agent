@@ -18,6 +18,7 @@ Set env vars before `macs run` / `macs resume`:
 | `API_KEY` | for real LLM | — (if unset, uses offline heuristic) |
 | `BASE_URL` | no | `https://api.deepseek.com` |
 | `MODEL` | no | `deepseek-chat` |
+| `MACS_AUTO_APPROVE` | no | unset (interactive gates) |
 
 ```bash
 export API_KEY=sk-...
@@ -40,11 +41,19 @@ macs resume <run_id> --repo /path/to/repo --approve
 # Approve merge gate → completed (does not auto-merge main)
 macs resume <run_id> --repo /path/to/repo --approve
 
+# Unattended: auto-approve both gates (demo / CI only)
+macs run "ship [modules: app]" --repo /path/to/repo --auto
+# or: MACS_AUTO_APPROVE=1 macs run "..." --repo /path/to/repo
+
 # Ticket-01 stub graph (immediate completed)
 macs run "ping" --repo /path/to/repo --stub-graph
 ```
 
+**Caution:** `--auto` / `MACS_AUTO_APPROVE` skips human review of design and merge. Prefer interactive mode for important repositories.
+
 Plain local folders work; git is auto-initialized when implementers need worktrees.
+
+After design freeze approval, Implementers call the LLM to write real Python source into isolated worktrees (not placeholder markdown).
 
 Goal cues for demos/tests (mainly for offline heuristic):
 
@@ -54,4 +63,4 @@ Goal cues for demos/tests (mainly for offline heuristic):
   (if that owner matches no implementer module, the run fails — no queue-first fallback)
 - Repo optional `macs_check` script — reviewer exit code
 
-Artifacts live under `<repo>/runs/<run-id>/`.
+Artifacts live under `<repo>/runs/<run-id>/`. Each run appends an audit trail at `events.jsonl` (phases, gates, decisions with `human`/`auto` source, files written, review, terminal status).

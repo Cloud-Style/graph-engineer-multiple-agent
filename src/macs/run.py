@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +29,15 @@ class RunResult:
     artifacts_dir: Path
     waiting_for_human: bool
     gate: str | None = None
+
+
+def _env_auto_approve() -> bool:
+    return os.environ.get("MACS_AUTO_APPROVE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def _result_from_artifacts(run_id: str, artifacts_dir: Path) -> RunResult:
@@ -57,15 +67,21 @@ def run(
     llm: LlmPort | None = None,
     tools: ToolPort | None = None,
     graph_runner: GraphRunner | None = None,
+    auto_approve: bool | None = None,
 ) -> RunResult:
     """Execute one assistant run against a target repository.
 
     Defaults to the current working directory. Callers may inject LLM, tool,
     and graph ports (tests use stubs that never call a real model or tools).
+
+    When ``auto_approve`` is true (or ``MACS_AUTO_APPROVE`` is set), human
+    gates are auto-approved until a terminal status.
     """
     target = (repo_path or Path.cwd()).resolve()
     if not target.is_dir():
         raise FileNotFoundError(f"repo_path is not a directory: {target}")
+
+    approve = _env_auto_approve() if auto_approve is None else auto_approve
 
     run_id = uuid.uuid4().hex
     artifacts_dir = target / "runs" / run_id
@@ -82,9 +98,21 @@ def run(
         goal=goal,
         repo_path=target,
         artifacts_dir=artifacts_dir,
+        auto_approve=approve,
     )
     active_graph.execute(ctx, active_llm, active_tools)
-    return _result_from_artifacts(run_id, artifacts_dir)
+    result = _result_from_artifacts(run_id, artifacts_dir)
+    while approve and result.waiting_for_human:
+        result = resume(
+            run_id,
+            decision="approve",
+            repo_path=target,
+            llm=active_llm,
+            tools=active_tools,
+            graph_runner=active_graph,
+            decision_source="auto",
+        )
+    return result
 
 
 def resume(
@@ -95,6 +123,7 @@ def resume(
     llm: LlmPort | None = None,
     tools: ToolPort | None = None,
     graph_runner: GraphRunner | None = None,
+    decision_source: Literal["human", "auto"] = "human",
 ) -> RunResult:
     """Resume a paused run after a human gate decision."""
     target = (repo_path or Path.cwd()).resolve()
@@ -105,6 +134,7 @@ def resume(
 
     state = json.loads(state_path.read_text(encoding="utf-8"))
     state["decision"] = decision
+    state["decision_source"] = decision_source
     state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
 
     goal = str(state.get("goal") or "")
@@ -118,6 +148,8 @@ def resume(
         goal=goal,
         repo_path=target,
         artifacts_dir=artifacts_dir,
+        auto_approve=bool(state.get("auto_approve", False)),
+        decision_source=decision_source,
     )
     active_graph.execute(ctx, active_llm, active_tools)
     return _result_from_artifacts(run_id, artifacts_dir)

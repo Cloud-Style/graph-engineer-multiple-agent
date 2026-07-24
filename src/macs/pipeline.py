@@ -21,6 +21,7 @@ from macs.constants import (
     STATUS_RUNNING,
     STATUS_WAITING,
 )
+from macs.events import append_event
 from macs.goal_parse import wants_failing_checks
 from macs.ports import LlmPort, RunContext, ToolPort
 from macs.worktree import commit_file, create_task_worktree, ensure_git_repo
@@ -33,6 +34,8 @@ class PipelineState(TypedDict, total=False):
     run_id: str
     phase: str
     decision: str
+    decision_source: str
+    auto_approve: bool
     work_graph: dict[str, Any]
     contract: dict[str, Any]
     designs: list[dict[str, Any]]
@@ -92,6 +95,36 @@ def _llm_json(llm: LlmPort, prompt: str) -> dict[str, Any]:
     return data
 
 
+def _emit(state: PipelineState, event_type: str, summary: str, **fields: Any) -> None:
+    append_event(
+        Path(state["artifacts_dir"]),
+        run_id=str(state.get("run_id") or ""),
+        event_type=event_type,
+        summary=summary,
+        **fields,
+    )
+
+
+def _parse_implement_files(payload: dict[str, Any]) -> list[tuple[str, str]]:
+    files = payload.get("files")
+    out: list[tuple[str, str]] = []
+    if isinstance(files, list):
+        for item in files:
+            if not isinstance(item, dict):
+                continue
+            path = item.get("path")
+            if path in (None, "") or "content" not in item:
+                continue
+            out.append((str(path), str(item["content"])))
+    elif isinstance(files, dict):
+        out.extend((str(path), str(content)) for path, content in files.items())
+    return out
+
+
+def _worktree_has_py(worktree: Path) -> bool:
+    return any(path.suffix == ".py" and path.is_file() for path in worktree.rglob("*.py"))
+
+
 def _persist_status(artifacts: Path, state: PipelineState) -> None:
     _write_json(
         artifacts / "status.json",
@@ -136,6 +169,7 @@ class MacsGraphRunner:
                     "phase": "start",
                     "status": STATUS_WAITING,
                     "waiting_for_human": False,
+                    "auto_approve": ctx.auto_approve,
                 },
             )
         graph = self._build_graph()
@@ -178,7 +212,11 @@ class MacsGraphRunner:
             self._after_design_decision,
             {"implementers": "implementers", "end": END},
         )
-        graph.add_edge("implementers", "reviewer")
+        graph.add_conditional_edges(
+            "implementers",
+            self._after_implementers,
+            {"reviewer": "reviewer", "end": END},
+        )
         graph.add_conditional_edges(
             "reviewer",
             self._after_review,
@@ -246,7 +284,9 @@ class MacsGraphRunner:
             ],
         }
         _write_json(artifacts / "work_graph.json", work_graph)
-        return {**state, "work_graph": work_graph, "phase": "contracts"}
+        updated = {**state, "work_graph": work_graph, "phase": "contracts"}
+        _emit(updated, "phase_completed", "orchestrator planned work graph", phase="orchestrator")
+        return updated
 
     def _contracts(self, state: PipelineState) -> PipelineState:
         assert self._llm is not None
@@ -268,7 +308,9 @@ class MacsGraphRunner:
         for key in ("boundaries", "apis", "entities", "errors", "dependency_direction", "non_goals"):
             contract.setdefault(key, [])
         _write_json(artifacts / "contract.json", contract)
-        return {**state, "contract": contract, "phase": "module_designers"}
+        updated = {**state, "contract": contract, "phase": "module_designers"}
+        _emit(updated, "phase_completed", "contracts authored", phase="contracts")
+        return updated
 
     def _module_designers(self, state: PipelineState) -> PipelineState:
         assert self._llm is not None
@@ -295,7 +337,14 @@ class MacsGraphRunner:
             _write_json(designs_dir / f"{module}.json", design)
             designs.append(design)
         # Ensure no production code edits during design: only artifacts_dir writes.
-        return {**state, "designs": designs, "phase": "reconciler"}
+        updated = {**state, "designs": designs, "phase": "reconciler"}
+        _emit(
+            updated,
+            "phase_completed",
+            f"module designs written ({len(designs)})",
+            phase="module_designers",
+        )
+        return updated
 
     def _reconciler(self, state: PipelineState) -> PipelineState:
         assert self._llm is not None
@@ -346,13 +395,21 @@ class MacsGraphRunner:
             if mod
         ]
         _write_json(artifacts / "tasks.json", {"tasks": tasks})
-        return {
+        updated = {
             **state,
             "conflicts": conflicts,
             "frozen_design": frozen,
             "tasks": tasks,
             "phase": "design_freeze",
         }
+        _emit(
+            updated,
+            "phase_completed",
+            "reconciler produced frozen design",
+            phase="reconciler",
+            conflict_count=len(conflicts),
+        )
+        return updated
 
     def _await_design_freeze(self, state: PipelineState) -> PipelineState:
         artifacts = Path(state["artifacts_dir"])
@@ -365,10 +422,25 @@ class MacsGraphRunner:
             "decision": "",
         }
         _persist_status(artifacts, updated)
+        _emit(
+            updated,
+            "gate_entered",
+            "waiting at design freeze gate",
+            gate=GATE_DESIGN_FREEZE,
+        )
         return updated
 
     def _handle_design_decision(self, state: PipelineState) -> PipelineState:
         decision = (state.get("decision") or "").lower()
+        source = str(state.get("decision_source") or "human")
+        _emit(
+            state,
+            "gate_decision",
+            f"design freeze {decision}",
+            gate=GATE_DESIGN_FREEZE,
+            decision=decision,
+            source=source,
+        )
         if decision == "reject":
             updated: PipelineState = {
                 **state,
@@ -377,8 +449,10 @@ class MacsGraphRunner:
                 "gate": GATE_DESIGN_FREEZE,
                 "phase": "rejected_design",
                 "decision": "",
+                "decision_source": "",
             }
             _persist_status(Path(state["artifacts_dir"]), updated)
+            _emit(updated, "run_terminal", "design rejected", status=STATUS_REJECTED)
             return updated
         if decision != "approve":
             updated = {
@@ -388,17 +462,31 @@ class MacsGraphRunner:
                 "error": f"unknown design decision: {decision!r}",
                 "phase": "failed",
                 "decision": "",
+                "decision_source": "",
             }
             _persist_status(Path(state["artifacts_dir"]), updated)
+            _emit(updated, "run_terminal", "failed at design gate", status=STATUS_FAILED)
             return updated
-        return {**state, "decision": "", "phase": "implementers", "waiting_for_human": False}
+        return {
+            **state,
+            "decision": "",
+            "decision_source": "",
+            "phase": "implementers",
+            "waiting_for_human": False,
+        }
 
     def _after_design_decision(self, state: PipelineState) -> Literal["implementers", "end"]:
         if state.get("phase") == "implementers":
             return "implementers"
         return "end"
 
+    def _after_implementers(self, state: PipelineState) -> Literal["reviewer", "end"]:
+        if state.get("phase") == "failed":
+            return "end"
+        return "reviewer"
+
     def _implementers(self, state: PipelineState) -> PipelineState:
+        assert self._llm is not None
         artifacts = Path(state["artifacts_dir"])
         repo = Path(state["repo_path"])
         ensure_git_repo(repo)
@@ -411,9 +499,10 @@ class MacsGraphRunner:
         )
         worktrees_root = artifacts / "worktrees"
         updated = {str(t.get("id")): dict(t) for t in base_tasks}
-        attempt = int(state.get("review_attempts") or 0)
+        frozen = state.get("frozen_design") or {}
         for task in targets:
             task_id = str(task["id"])
+            module = str(task.get("module") or "app")
             path, branch = create_task_worktree(
                 repo,
                 run_id=state["run_id"],
@@ -421,24 +510,68 @@ class MacsGraphRunner:
                 worktrees_root=worktrees_root,
             )
             revision = int(task.get("revision") or 0) + 1
-            body = (
-                f"# {task.get('summary')}\n\n"
-                f"Implemented in isolated worktree.\n"
-                f"revision: {revision}\n"
-            )
-            if attempt > 0:
-                body += f"Retry after reviewer routing (attempt {attempt}).\n"
-            commit_file(
-                path,
-                f"macs_impl/{task.get('module', 'app')}.md",
-                body,
-                f"macs: {task_id}",
+            try:
+                payload = _llm_json(
+                    self._llm,
+                    (
+                        "STAGE=implement\n"
+                        f"MODULE={module}\n"
+                        f"TASK_ID={task_id}\n"
+                        f"REVISION={revision}\n"
+                        f"GOAL={state['goal']}\n"
+                        f"FROZEN_DESIGN={json.dumps(frozen, ensure_ascii=False)}\n"
+                        "Return JSON: "
+                        '{"files":[{"path":"relative/path.py","content":"..."}]}. '
+                        "Write real Python source for this module only; "
+                        "do not use placeholder markdown as the sole deliverable.\n"
+                    ),
+                )
+            except (json.JSONDecodeError, ValueError, TypeError) as exc:
+                failed: PipelineState = {
+                    **state,
+                    "status": STATUS_FAILED,
+                    "waiting_for_human": False,
+                    "phase": "failed",
+                    "error": f"implement LLM response invalid for {task_id}: {exc}",
+                }
+                _persist_status(artifacts, failed)
+                _emit(failed, "run_terminal", "implement failed", status=STATUS_FAILED)
+                return failed
+            files = _parse_implement_files(payload)
+            usable = [(p, c) for p, c in files if str(c).strip()]
+            py_files = [(p, c) for p, c in usable if p.endswith(".py")]
+            if not py_files:
+                failed = {
+                    **state,
+                    "status": STATUS_FAILED,
+                    "waiting_for_human": False,
+                    "phase": "failed",
+                    "error": (
+                        f"implement produced no usable Python source for {task_id} "
+                        "(refusing placeholder-only success)"
+                    ),
+                }
+                _persist_status(artifacts, failed)
+                _emit(failed, "run_terminal", "implement failed", status=STATUS_FAILED)
+                return failed
+            written_paths: list[str] = []
+            for rel, content in usable:
+                commit_file(path, rel, content, f"macs: {task_id} {rel}")
+                written_paths.append(rel)
+            _emit(
+                state,
+                "files_written",
+                f"implementer wrote {len(written_paths)} file(s) for {task_id}",
+                task_id=task_id,
+                module=module,
+                paths=written_paths,
             )
             updated[task_id] = {
                 **task,
                 "worktree": str(path),
                 "branch": branch,
                 "revision": revision,
+                "files": written_paths,
             }
         realized = [updated[str(t.get("id"))] for t in base_tasks]
         _write_json(artifacts / "implementations.json", {"tasks": realized})
@@ -476,11 +609,27 @@ class MacsGraphRunner:
         elif wants_failing_checks(state["goal"]):
             passed = False
             detail = "goal requested failing checks"
+        source_files_present = any(
+            _worktree_has_py(Path(str(t.get("worktree"))))
+            for t in state.get("tasks") or []
+            if t.get("worktree")
+        )
+        if not source_files_present:
+            passed = False
+            detail = (detail + "; " if detail else "") + "no Python source in worktrees"
         review: dict[str, Any] = {
             "passed": passed,
             "detail": detail,
             "rewrote_features": False,
+            "source_files_present": source_files_present,
         }
+        _emit(
+            state,
+            "review_result",
+            "review checks passed" if passed else "review checks failed",
+            passed=passed,
+            source_files_present=source_files_present,
+        )
         if not passed:
             attempts = int(state.get("review_attempts") or 0)
             tasks = list(state.get("tasks") or [])
@@ -505,6 +654,12 @@ class MacsGraphRunner:
                     ),
                 }
                 _persist_status(artifacts, updated)
+                _emit(
+                    updated,
+                    "run_terminal",
+                    "review failed without owner mapping",
+                    status=STATUS_FAILED,
+                )
                 return updated
             if attempts < MAX_REVIEW_REROUTES:
                 return {
@@ -529,6 +684,12 @@ class MacsGraphRunner:
                 "error": "review checks failed after implementer retry",
             }
             _persist_status(artifacts, updated)
+            _emit(
+                updated,
+                "run_terminal",
+                "review failed after implementer retry",
+                status=STATUS_FAILED,
+            )
             return updated
         _write_json(artifacts / "review.json", review)
         pr = {
@@ -566,11 +727,21 @@ class MacsGraphRunner:
             "decision": "",
         }
         _persist_status(artifacts, updated)
+        _emit(updated, "gate_entered", "waiting at merge gate", gate=GATE_MERGE)
         return updated
 
     def _handle_merge_decision(self, state: PipelineState) -> PipelineState:
         artifacts = Path(state["artifacts_dir"])
         decision = (state.get("decision") or "").lower()
+        source = str(state.get("decision_source") or "human")
+        _emit(
+            state,
+            "gate_decision",
+            f"merge {decision}",
+            gate=GATE_MERGE,
+            decision=decision,
+            source=source,
+        )
         # Never auto-merge to main; approval only marks run success.
         if decision == "approve":
             pr = state.get("pr") or {}
@@ -583,6 +754,7 @@ class MacsGraphRunner:
                     "error": "cannot complete without PR draft + passing review/checks",
                     "phase": "failed",
                     "decision": "",
+                    "decision_source": "",
                 }
             else:
                 updated = {
@@ -592,6 +764,7 @@ class MacsGraphRunner:
                     "gate": GATE_MERGE,
                     "phase": "completed",
                     "decision": "",
+                    "decision_source": "",
                     "merged_to_main": False,
                 }
         elif decision == "reject":
@@ -602,6 +775,7 @@ class MacsGraphRunner:
                 "gate": GATE_MERGE,
                 "phase": "rejected_merge",
                 "decision": "",
+                "decision_source": "",
                 "merged_to_main": False,
             }
         else:
@@ -612,6 +786,13 @@ class MacsGraphRunner:
                 "error": f"unknown merge decision: {decision!r}",
                 "phase": "failed",
                 "decision": "",
+                "decision_source": "",
             }
         _persist_status(artifacts, updated)
+        _emit(
+            updated,
+            "run_terminal",
+            f"run ended with {updated.get('status')}",
+            status=updated.get("status"),
+        )
         return updated

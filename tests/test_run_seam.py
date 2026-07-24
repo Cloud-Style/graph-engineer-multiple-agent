@@ -259,10 +259,10 @@ def test_implement_review_pr_and_failing_checks(tmp_path: Path) -> None:
     by_id = {t["id"]: t for t in impl["tasks"]}
     assert by_id["task-2-auth"]["revision"] == 2
     assert by_id["task-1-api"]["revision"] == 1
-    auth_md = Path(by_id["task-2-auth"]["worktree"]) / "macs_impl" / "auth.md"
-    api_md = Path(by_id["task-1-api"]["worktree"]) / "macs_impl" / "api.md"
-    assert "Retry after reviewer routing" in auth_md.read_text(encoding="utf-8")
-    assert "Retry after reviewer routing" not in api_md.read_text(encoding="utf-8")
+    auth_py = Path(by_id["task-2-auth"]["worktree"]) / "auth" / "auth.py"
+    api_py = Path(by_id["task-1-api"]["worktree"]) / "api" / "api.py"
+    assert "Retry after reviewer routing" in auth_py.read_text(encoding="utf-8")
+    assert "Retry after reviewer routing" not in api_py.read_text(encoding="utf-8")
 
     # Owner with no matching implementer module: fail, do not fall back to queue-first.
     repo_mismatch = tmp_path / "repo-mismatch"
@@ -487,6 +487,205 @@ def test_success_requires_second_gate_approval(tmp_path: Path) -> None:
     assert waiting["waiting_for_human"] is True
     assert waiting["status"] == "waiting_for_human"
     assert waiting["gate"] == GATE_MERGE
+
+
+def _read_events(artifacts_dir: Path) -> list[dict[str, object]]:
+    path = artifacts_dir / "events.jsonl"
+    assert path.is_file(), "events.jsonl must exist for audit"
+    lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    return [json.loads(ln) for ln in lines]
+
+
+def test_run_appends_audit_events_across_resume(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    ensure_git_repo(repo)
+    (repo / "macs_check").write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+    (repo / "macs_check").chmod(0o755)
+
+    paused = run(
+        goal="audit [modules: app]",
+        repo_path=repo,
+        llm=HeuristicLlmPort(),
+        graph_runner=MacsGraphRunner(),
+    )
+    events1 = _read_events(paused.artifacts_dir)
+    types1 = [str(e.get("type")) for e in events1]
+    assert "phase_completed" in types1
+    assert "gate_entered" in types1
+    assert any(e.get("gate") == GATE_DESIGN_FREEZE for e in events1 if e.get("type") == "gate_entered")
+    for ev in events1:
+        assert ev.get("run_id") == paused.run_id
+        assert "ts" in ev
+        assert "summary" in ev
+
+    at_merge = resume(
+        paused.run_id,
+        decision="approve",
+        repo_path=repo,
+        llm=HeuristicLlmPort(),
+        graph_runner=MacsGraphRunner(),
+    )
+    events2 = _read_events(paused.artifacts_dir)
+    assert len(events2) > len(events1), "resume must append, not rewrite history"
+    types2 = [str(e.get("type")) for e in events2]
+    assert "gate_decision" in types2
+    assert any(
+        e.get("type") == "gate_decision"
+        and e.get("source") == "human"
+        and e.get("decision") == "approve"
+        for e in events2
+    )
+    assert "files_written" in types2
+    assert "review_result" in types2
+    assert at_merge.gate == GATE_MERGE
+
+    done = resume(
+        paused.run_id,
+        decision="approve",
+        repo_path=repo,
+        llm=HeuristicLlmPort(),
+        graph_runner=MacsGraphRunner(),
+    )
+    events3 = _read_events(paused.artifacts_dir)
+    assert len(events3) > len(events2)
+    assert any(e.get("type") == "run_terminal" and e.get("status") == "completed" for e in events3)
+    assert done.status == "completed"
+
+
+def test_implementer_writes_real_source_not_placeholder_md(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    ensure_git_repo(repo)
+    (repo / "macs_check").write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+    (repo / "macs_check").chmod(0o755)
+
+    paused = run(
+        goal="code [modules: app]",
+        repo_path=repo,
+        llm=HeuristicLlmPort(),
+        graph_runner=MacsGraphRunner(),
+    )
+    after = resume(
+        paused.run_id,
+        decision="approve",
+        repo_path=repo,
+        llm=HeuristicLlmPort(),
+        graph_runner=MacsGraphRunner(),
+    )
+    assert after.gate == GATE_MERGE
+    impl = json.loads(
+        (paused.artifacts_dir / "implementations.json").read_text(encoding="utf-8")
+    )
+    task = impl["tasks"][0]
+    wt = Path(task["worktree"])
+    py = wt / "app" / "app.py"
+    assert py.is_file()
+    assert "MACS_IMPL_MARKER" in py.read_text(encoding="utf-8")
+    assert not (wt / "macs_impl" / "app.md").exists()
+    events = _read_events(paused.artifacts_dir)
+    written = [e for e in events if e.get("type") == "files_written"]
+    assert written
+    assert any("app/app.py" in (e.get("paths") or []) for e in written)
+    review = json.loads((paused.artifacts_dir / "review.json").read_text(encoding="utf-8"))
+    assert review.get("source_files_present") is True
+
+
+def test_implementer_invalid_llm_payload_fails(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    ensure_git_repo(repo)
+
+    class BrokenImplementLlm(HeuristicLlmPort):
+        def complete(self, prompt: str) -> str:
+            if "STAGE=implement" in prompt:
+                self.calls += 1
+                return json.dumps({"files": []})
+            return super().complete(prompt)
+
+    paused = run(
+        goal="bad-impl [modules: app]",
+        repo_path=repo,
+        llm=BrokenImplementLlm(),
+        graph_runner=MacsGraphRunner(),
+    )
+    after = resume(
+        paused.run_id,
+        decision="approve",
+        repo_path=repo,
+        llm=BrokenImplementLlm(),
+        graph_runner=MacsGraphRunner(),
+    )
+    assert after.status == "failed"
+    assert after.waiting_for_human is False
+    state = json.loads(
+        (paused.artifacts_dir / "pipeline_state.json").read_text(encoding="utf-8")
+    )
+    assert "implement" in (state.get("error") or "").lower()
+    impl_path = paused.artifacts_dir / "implementations.json"
+    if impl_path.is_file():
+        impl = json.loads(impl_path.read_text(encoding="utf-8"))
+        for task in impl.get("tasks") or []:
+            wt = Path(task.get("worktree") or ".")
+            assert not (wt / "macs_impl" / "app.md").exists()
+
+
+def test_auto_approve_reaches_completed_without_resume(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    ensure_git_repo(repo)
+    (repo / "macs_check").write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+    (repo / "macs_check").chmod(0o755)
+
+    done = run(
+        goal="auto [modules: app]",
+        repo_path=repo,
+        llm=HeuristicLlmPort(),
+        graph_runner=MacsGraphRunner(),
+        auto_approve=True,
+    )
+    assert done.status == "completed"
+    assert done.waiting_for_human is False
+    assert (done.artifacts_dir / "pr.json").is_file()
+    py = Path(
+        json.loads((done.artifacts_dir / "implementations.json").read_text(encoding="utf-8"))[
+            "tasks"
+        ][0]["worktree"]
+    ) / "app" / "app.py"
+    assert py.is_file()
+    events = _read_events(done.artifacts_dir)
+    assert any(
+        e.get("type") == "gate_decision" and e.get("source") == "auto" for e in events
+    )
+
+
+def test_cli_auto_flag(tmp_path: Path) -> None:
+    repo = tmp_path / "cli-auto"
+    ensure_git_repo(repo)
+    (repo / "macs_check").write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+    (repo / "macs_check").chmod(0o755)
+
+    import os
+
+    env = os.environ.copy()
+    env.pop("API_KEY", None)
+    env.pop("MACS_AUTO_APPROVE", None)
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "macs",
+            "run",
+            "cli-auto [modules: app]",
+            "--repo",
+            str(repo),
+            "--auto",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["status"] == "completed"
+    assert payload["waiting_for_human"] is False
 
 
 def test_resume_after_completed_does_not_replan(tmp_path: Path) -> None:
