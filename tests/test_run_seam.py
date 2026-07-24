@@ -232,7 +232,7 @@ def test_implement_review_pr_and_failing_checks(tmp_path: Path) -> None:
     (repo / "macs_check").chmod(0o755)
 
     paused = run(
-        goal="x [modules: auth, api]",
+        goal="x [modules: api, auth] [check-owner: auth]",
         repo_path=repo,
         llm=HeuristicLlmPort(),
         graph_runner=MacsGraphRunner(),
@@ -248,18 +248,19 @@ def test_implement_review_pr_and_failing_checks(tmp_path: Path) -> None:
     assert after.waiting_for_human is False
     review = json.loads((paused.artifacts_dir / "review.json").read_text(encoding="utf-8"))
     assert review["passed"] is False
-    assert review.get("repo_check_owner_task_ids") == ["task-1-auth"]
-    assert review.get("routed_back_to") == ["task-1-auth"]
+    # Ownership (auth), not queue order (api is first).
+    assert review.get("repo_check_owner_task_ids") == ["task-2-auth"]
+    assert "routed_back_to" not in review
     assert not (paused.artifacts_dir / "pr.json").exists()
     impl = json.loads(
         (paused.artifacts_dir / "implementations.json").read_text(encoding="utf-8")
     )
     assert len(impl["tasks"]) == 2
     by_id = {t["id"]: t for t in impl["tasks"]}
-    assert by_id["task-1-auth"]["revision"] == 2
-    assert by_id["task-2-api"]["revision"] == 1
-    auth_md = Path(by_id["task-1-auth"]["worktree"]) / "macs_impl" / "auth.md"
-    api_md = Path(by_id["task-2-api"]["worktree"]) / "macs_impl" / "api.md"
+    assert by_id["task-2-auth"]["revision"] == 2
+    assert by_id["task-1-api"]["revision"] == 1
+    auth_md = Path(by_id["task-2-auth"]["worktree"]) / "macs_impl" / "auth.md"
+    api_md = Path(by_id["task-1-api"]["worktree"]) / "macs_impl" / "api.md"
     assert "Retry after reviewer routing" in auth_md.read_text(encoding="utf-8")
     assert "Retry after reviewer routing" not in api_md.read_text(encoding="utf-8")
 

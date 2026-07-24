@@ -59,6 +59,30 @@ def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _task_ids_for_contract_owners(
+    tasks: list[dict[str, Any]],
+    contract: dict[str, Any] | None,
+) -> list[str]:
+    """Map contract API owners to implementer task ids (ownership-based routing)."""
+    owners: list[str] = []
+    seen: set[str] = set()
+    for api in (contract or {}).get("apis") or []:
+        if not isinstance(api, dict):
+            continue
+        owner = api.get("owner")
+        if owner in (None, ""):
+            continue
+        name = str(owner)
+        if name not in seen:
+            seen.add(name)
+            owners.append(name)
+    by_module = {str(t.get("module")): str(t["id"]) for t in tasks if t.get("id")}
+    routed = [by_module[m] for m in owners if m in by_module]
+    if routed:
+        return routed
+    return [str(tasks[0]["id"])] if tasks else []
+
+
 def _llm_json(llm: LlmPort, prompt: str) -> dict[str, Any]:
     raw = llm.complete(prompt)
     data = json.loads(raw or "{}")
@@ -422,10 +446,12 @@ class MacsGraphRunner:
         if not passed:
             attempts = int(state.get("review_attempts") or 0)
             tasks = list(state.get("tasks") or [])
-            # Repo-level macs_check has no per-module signal; v1 routes only the
-            # first task (sorted pipeline order) so other worktrees stay untouched.
-            repo_check_owner_task_ids = [str(tasks[0]["id"])] if tasks else []
-            review["routed_back_to"] = repo_check_owner_task_ids
+            # Route to implementers whose modules own APIs in the contract
+            # (not "first task in the queue").
+            repo_check_owner_task_ids = _task_ids_for_contract_owners(
+                tasks,
+                state.get("contract"),
+            )
             review["repo_check_owner_task_ids"] = repo_check_owner_task_ids
             _write_json(artifacts / "review.json", review)
             if attempts < MAX_REVIEW_REROUTES and repo_check_owner_task_ids:

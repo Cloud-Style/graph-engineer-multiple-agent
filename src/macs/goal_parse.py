@@ -28,3 +28,12 @@ def wants_missing_owner(goal: str) -> bool:
 
 def wants_escalate_conflict(goal: str) -> bool:
     return "[escalate:conflict]" in goal.lower()
+
+
+def check_owner_from_goal(goal: str) -> str | None:
+    """Optional ``[check-owner: module]`` — contract API owner for check routing."""
+    match = re.search(r"\[check-owner:\s*([^\]]+)\]", goal, flags=re.IGNORECASE)
+    if not match:
+        return None
+    owner = match.group(1).strip()
+    return owner or None

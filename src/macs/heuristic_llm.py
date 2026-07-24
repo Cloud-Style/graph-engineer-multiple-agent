@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass
 
 from macs.goal_parse import (
+    check_owner_from_goal,
     modules_from_goal,
     wants_api_conflict,
     wants_escalate_conflict,
@@ -44,7 +45,8 @@ class HeuristicLlmPort:
             )
         if "STAGE=contracts" in prompt:
             modules = modules_from_goal(goal)
-            apis = [{"name": "Login", "owner": modules[0], "shape": "POST /login"}]
+            owner = check_owner_from_goal(goal) or modules[0]
+            apis = [{"name": "Login", "owner": owner, "shape": "POST /login"}]
             return json.dumps(
                 {
                     "boundaries": [f"module:{m}" for m in modules],
