@@ -44,6 +44,7 @@ class PipelineState(TypedDict, total=False):
     gate: str
     error: str
     merged_to_main: bool
+    review_attempts: int
 
 
 def _write_json(path: Path, payload: dict[str, Any] | list[Any]) -> None:
@@ -153,7 +154,7 @@ class MacsGraphRunner:
         graph.add_conditional_edges(
             "reviewer",
             self._after_review,
-            {"await_merge": "await_merge", "end": END},
+            {"await_merge": "await_merge", "implementers": "implementers", "end": END},
         )
         graph.add_edge("await_merge", END)
         graph.add_edge("handle_merge_decision", END)
@@ -268,6 +269,7 @@ class MacsGraphRunner:
             }
             if not proposal.get("resolved", True):
                 frozen["needs_human"] = True
+                frozen["escalated"] = True
         _write_json(artifacts / "frozen_design.json", frozen)
         tasks = [
             {
@@ -346,11 +348,15 @@ class MacsGraphRunner:
                 task_id=task_id,
                 worktrees_root=worktrees_root,
             )
+            attempt = int(state.get("review_attempts") or 0)
+            body = f"# {task.get('summary')}\n\nImplemented in isolated worktree.\n"
+            if attempt > 0:
+                body += f"\n## Fix attempt {attempt}\nRouted back from reviewer.\n"
             commit_file(
                 path,
                 f"macs_impl/{task.get('module', 'app')}.md",
-                f"# {task.get('summary')}\n\nImplemented in isolated worktree.\n",
-                f"macs: {task_id}",
+                body,
+                f"macs: {task_id} attempt={attempt}",
             )
             realized.append({**task, "worktree": str(path), "branch": branch})
         _write_json(artifacts / "implementations.json", {"tasks": realized})
@@ -389,13 +395,29 @@ class MacsGraphRunner:
         }
         _write_json(artifacts / "review.json", review)
         if not passed:
+            attempts = int(state.get("review_attempts") or 0)
+            task_ids = [str(t.get("id")) for t in state.get("tasks") or []]
+            if attempts < 1:
+                review["routed_back_to"] = task_ids
+                _write_json(artifacts / "review.json", review)
+                return {
+                    **state,
+                    "review": review,
+                    "review_attempts": attempts + 1,
+                    "phase": "implementers",
+                    "status": STATUS_WAITING,
+                    "waiting_for_human": False,
+                    "error": "review checks failed; routed back to implementers",
+                }
+            review["routed_back_to"] = task_ids
+            _write_json(artifacts / "review.json", review)
             updated: PipelineState = {
                 **state,
                 "review": review,
                 "status": STATUS_FAILED,
                 "waiting_for_human": False,
                 "phase": "review_failed",
-                "error": "review checks failed",
+                "error": "review checks failed after implementer retry",
             }
             _persist_status(artifacts, updated)
             return updated
@@ -414,9 +436,13 @@ class MacsGraphRunner:
         )
         return {**state, "review": review, "pr": pr, "phase": "merge"}
 
-    def _after_review(self, state: PipelineState) -> Literal["await_merge", "end"]:
+    def _after_review(
+        self, state: PipelineState
+    ) -> Literal["await_merge", "implementers", "end"]:
         if state.get("phase") == "merge":
             return "await_merge"
+        if state.get("phase") == "implementers":
+            return "implementers"
         return "end"
 
     def _await_merge(self, state: PipelineState) -> PipelineState:

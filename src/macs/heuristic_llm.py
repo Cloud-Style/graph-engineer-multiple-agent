@@ -67,7 +67,14 @@ class HeuristicLlmPort:
                 }
             )
         if "STAGE=reconcile" in prompt:
-            # Prefer first module's shape when auto-reconciling.
+            if "[escalate:conflict]" in goal.lower():
+                return json.dumps(
+                    {
+                        "resolved": False,
+                        "apis": [],
+                        "notes": "unresolved — escalate to human",
+                    }
+                )
             return json.dumps(
                 {
                     "resolved": True,
