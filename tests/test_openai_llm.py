@@ -27,4 +27,4 @@ def test_llm_from_env_uses_openai_compatible_when_key_set(monkeypatch: object) -
     assert isinstance(llm, OpenAICompatibleLlmPort)
     assert llm.api_key == "sk-test"
     assert llm.base_url == "https://api.deepseek.com"
-    assert llm.model == "deepseek-chat"
+    assert llm.model == "deepseek-v4-pro"

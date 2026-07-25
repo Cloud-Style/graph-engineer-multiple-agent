@@ -25,71 +25,73 @@
 | `runs/<id>/` 产物 + `events.jsonl` 审计 | 丰富冲突本体（软语义不一致等大多检不出） |
 | 模块扇出上限 2；无 `API_KEY` 时用离线 heuristic | 无限模块 / 自由改写组织图 |
 
-## Install
+## 安装
 
 ```bash
 uv venv .venv && source .venv/bin/activate
 uv pip install -e ".[dev]"
 ```
 
-## LLM configuration
+## LLM 配置
 
-| Variable | Required | Default |
+| 环境变量 | 是否必需 | 默认值 |
 |---|---|---|
-| `API_KEY` | for real LLM | — (unset → offline heuristic) |
-| `BASE_URL` | no | `https://api.deepseek.com` |
-| `MODEL` | no | `deepseek-chat` |
-| `MACS_AUTO_APPROVE` | no | unset (interactive gates) |
+| `API_KEY` | 使用真实 LLM 时需要 | —（未设置则用离线 heuristic） |
+| `BASE_URL` | 否 | `https://api.deepseek.com` |
+| `MODEL` | 否 | `deepseek-v4-pro` |
+| `MACS_AUTO_APPROVE` | 否 | 未设置（交互式人闸） |
 
 ```bash
 export API_KEY=sk-...
-# optional: BASE_URL / MODEL
+# 可选：BASE_URL / MODEL
 
 macs run "做个猜数字游戏" --repo ./some-repo
 ```
 
-## Usage
+## 用法
 
 ```bash
-# Start (pauses at design-freeze gate)
+# 开始一次 run（停在设计冻结闸）
 macs run "add auth [modules: auth, api]" --repo /path/to/repo
 
-# Approve design → implement/review → pauses at merge gate
+# 批准设计 → 实现/审查 → 停在合入闸
 macs resume <run_id> --repo /path/to/repo --approve
 
-# Approve merge → completed (does NOT auto-merge main)
+# 批准合入闸 → completed（不会自动合入 main）
 macs resume <run_id> --repo /path/to/repo --approve
 
-# Demo / CI only: auto-approve both gates
+# 演示 / CI：两道闸自动批准
 macs run "ship [modules: app]" --repo /path/to/repo --auto
-# or: MACS_AUTO_APPROVE=1 macs run "..." --repo /path/to/repo
+# 或：MACS_AUTO_APPROVE=1 macs run "..." --repo /path/to/repo
 
-# Ticket-01 stub graph (immediate completed, still writes events.jsonl)
+# Ticket-01 桩图（立刻 completed，仍会写 events.jsonl）
 macs run "ping" --repo /path/to/repo --stub-graph
 ```
 
-**Caution:** `--auto` / `MACS_AUTO_APPROVE` skips human review of design and merge. Prefer interactive mode for anything you care about.
+**注意：** `--auto` / `MACS_AUTO_APPROVE` 会跳过人对设计与合入的审查。重要仓库请用交互模式。
 
-Plain folders work; git is auto-initialized when implementers need worktrees. After design freeze, Implementers call the LLM to write real Python into isolated worktrees (not placeholder markdown).
+普通本地文件夹即可；实现阶段需要 worktree 时会自动 `git init`。设计冻结批准后，Implementer 会调 LLM 在隔离 worktree 里写真实 Python（不是占位 markdown）。
 
-### Offline heuristic goal cues (tests / demos)
+### 离线 heuristic 的 goal 提示（测试 / 演示）
 
-- `[modules: a, b, c]` — planned modules (cap = 2; extras truncated)
-- `[conflict:api]` — force conflicting Login API shapes across modules
-- `[check-owner: auth]` — contract API owner for failed-check routing
-  (no matching implementer module → fail; no queue-first fallback)
-- Repo optional `macs_check` — reviewer exit code
+- `[modules: a, b, c]` — 规划模块（上限 2；多余截断）
+- `[conflict:api]` — 强制模块间 Login API shape 冲突
+- `[check-owner: auth]` — 检查失败时用于路由的契约 API owner
+  （没有匹配的实现任务模块 → 失败；不会 queue-first 回退）
+- 仓库可选 `macs_check` 脚本 — Reviewer 用其退出码
 
-Artifacts: `<repo>/runs/<run-id>/`. Audit trail: `events.jsonl` (phases, gates, `human`/`auto` decisions, files written, review, terminal status).
+产物目录：`<repo>/runs/<run-id>/`。审计日志：`events.jsonl`（阶段、人闸、`human`/`auto` 决议、写出文件、审查、终态）。
 
-## Development
+## 开发
 
 ```bash
 uv pip install -e ".[dev]"
 pytest
-# optional: mypy -p macs
+# 可选：mypy -p macs
 ```
 
-## License
+仓库里还有实验性子项目 [llm-playground](llm-playground/)（本地 OpenAI 兼容聊天 UI）。
 
-MIT — see [LICENSE](LICENSE).
+## 许可证
+
+MIT — 见 [LICENSE](LICENSE)。
