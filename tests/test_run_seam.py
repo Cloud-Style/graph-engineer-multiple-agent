@@ -52,6 +52,8 @@ def test_run_creates_artifacts_and_returns_result(tmp_path: Path) -> None:
     assert graph.calls == 1
     assert llm.calls == 0
     assert tools.calls == []
+    events = _read_events(result.artifacts_dir)
+    assert any(e.get("type") == "run_terminal" for e in events)
 
 
 def test_cli_run_against_repo_path(tmp_path: Path) -> None:
@@ -512,6 +514,11 @@ def test_run_appends_audit_events_across_resume(tmp_path: Path) -> None:
     types1 = [str(e.get("type")) for e in events1]
     assert "phase_completed" in types1
     assert "gate_entered" in types1
+    assert "llm_call" in types1
+    assert any(
+        e.get("type") == "llm_call" and e.get("ok") is True and e.get("stage") == "orchestrator"
+        for e in events1
+    )
     assert any(e.get("gate") == GATE_DESIGN_FREEZE for e in events1 if e.get("type") == "gate_entered")
     for ev in events1:
         assert ev.get("run_id") == paused.run_id
@@ -627,6 +634,45 @@ def test_implementer_invalid_llm_payload_fails(tmp_path: Path) -> None:
             assert not (wt / "macs_impl" / "app.md").exists()
 
 
+def test_implementer_llm_raise_writes_failed_audit(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    ensure_git_repo(repo)
+
+    class BoomImplementLlm(HeuristicLlmPort):
+        def complete(self, prompt: str) -> str:
+            if "STAGE=implement" in prompt:
+                self.calls += 1
+                raise RuntimeError("model exploded")
+            return super().complete(prompt)
+
+    paused = run(
+        goal="boom [modules: app]",
+        repo_path=repo,
+        llm=BoomImplementLlm(),
+        graph_runner=MacsGraphRunner(),
+    )
+    after = resume(
+        paused.run_id,
+        decision="approve",
+        repo_path=repo,
+        llm=BoomImplementLlm(),
+        graph_runner=MacsGraphRunner(),
+    )
+    assert after.status == "failed"
+    events = _read_events(paused.artifacts_dir)
+    assert any(
+        e.get("type") == "llm_call"
+        and e.get("ok") is False
+        and e.get("stage") == "implement"
+        for e in events
+    )
+    assert any(e.get("type") == "run_terminal" and e.get("status") == "failed" for e in events)
+    state = json.loads(
+        (paused.artifacts_dir / "pipeline_state.json").read_text(encoding="utf-8")
+    )
+    assert "model exploded" in (state.get("error") or "")
+
+
 def test_auto_approve_reaches_completed_without_resume(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     ensure_git_repo(repo)
@@ -649,6 +695,29 @@ def test_auto_approve_reaches_completed_without_resume(tmp_path: Path) -> None:
         ][0]["worktree"]
     ) / "app" / "app.py"
     assert py.is_file()
+    events = _read_events(done.artifacts_dir)
+    assert any(
+        e.get("type") == "gate_decision" and e.get("source") == "auto" for e in events
+    )
+
+
+def test_env_auto_approve_reaches_completed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    ensure_git_repo(repo)
+    (repo / "macs_check").write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+    (repo / "macs_check").chmod(0o755)
+
+    monkeypatch.setenv("MACS_AUTO_APPROVE", "1")
+    done = run(
+        goal="env-auto [modules: app]",
+        repo_path=repo,
+        llm=HeuristicLlmPort(),
+        graph_runner=MacsGraphRunner(),
+    )
+    assert done.status == "completed"
+    assert done.waiting_for_human is False
     events = _read_events(done.artifacts_dir)
     assert any(
         e.get("type") == "gate_decision" and e.get("source") == "auto" for e in events

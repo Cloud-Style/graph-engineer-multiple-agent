@@ -8,6 +8,9 @@ from pathlib import Path
 from typing import Any, Protocol
 
 
+from macs.events import append_event
+
+
 @dataclass(frozen=True)
 class RunContext:
     run_id: str
@@ -15,7 +18,6 @@ class RunContext:
     repo_path: Path
     artifacts_dir: Path
     auto_approve: bool = False
-    decision_source: str = "human"
 
 
 class LlmPort(Protocol):
@@ -85,4 +87,18 @@ class StubGraphRunner:
         (ctx.artifacts_dir / "status.json").write_text(
             json.dumps(payload) + "\n",
             encoding="utf-8",
+        )
+        append_event(
+            ctx.artifacts_dir,
+            run_id=ctx.run_id,
+            event_type="phase_completed",
+            summary="stub graph completed",
+            phase="stub",
+        )
+        append_event(
+            ctx.artifacts_dir,
+            run_id=ctx.run_id,
+            event_type="run_terminal",
+            summary="stub run completed",
+            status="completed",
         )

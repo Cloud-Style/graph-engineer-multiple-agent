@@ -149,7 +149,6 @@ def resume(
         repo_path=target,
         artifacts_dir=artifacts_dir,
         auto_approve=bool(state.get("auto_approve", False)),
-        decision_source=decision_source,
     )
     active_graph.execute(ctx, active_llm, active_tools)
     return _result_from_artifacts(run_id, artifacts_dir)

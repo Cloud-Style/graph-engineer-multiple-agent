@@ -4,7 +4,7 @@
 
 **Blocked by:** 07 — Run 事件审计日志
 
-**Status:** done
+Status: done
 
 - [x] Implementer 产出约定扩展名的源码文件并提交到任务 worktree，不以仅有占位 md 为成功
 - [x] 脚本化 LLM 接缝测试：过设计闸后 worktree 源码内容匹配固定片段

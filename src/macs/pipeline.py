@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Literal, TypedDict, cast
 
@@ -87,12 +88,9 @@ def _task_ids_for_contract_owners(
     return [by_module[m] for m in owners if m in by_module]
 
 
-def _llm_json(llm: LlmPort, prompt: str) -> dict[str, Any]:
-    raw = llm.complete(prompt)
-    data = json.loads(raw or "{}")
-    if not isinstance(data, dict):
-        raise ValueError("LLM stage must return a JSON object")
-    return data
+def _stage_from_prompt(prompt: str) -> str:
+    match = re.search(r"^STAGE=(\S+)", prompt, flags=re.MULTILINE)
+    return match.group(1) if match else "unknown"
 
 
 def _emit(state: PipelineState, event_type: str, summary: str, **fields: Any) -> None:
@@ -103,6 +101,69 @@ def _emit(state: PipelineState, event_type: str, summary: str, **fields: Any) ->
         summary=summary,
         **fields,
     )
+
+
+def _fail_pipeline(state: PipelineState, error: str) -> PipelineState:
+    updated: PipelineState = {
+        **state,
+        "status": STATUS_FAILED,
+        "waiting_for_human": False,
+        "phase": "failed",
+        "error": error,
+        "decision": "",
+        "decision_source": "",
+    }
+    _persist_status(Path(state["artifacts_dir"]), updated)
+    _emit(updated, "run_terminal", "run failed", status=STATUS_FAILED, error=error)
+    return updated
+
+
+def _llm_json(llm: LlmPort, prompt: str, state: PipelineState) -> dict[str, Any]:
+    stage = _stage_from_prompt(prompt)
+    try:
+        raw = llm.complete(prompt)
+    except Exception as exc:
+        _emit(
+            state,
+            "llm_call",
+            f"LLM {stage} raised",
+            stage=stage,
+            ok=False,
+            error=str(exc),
+        )
+        raise
+    try:
+        data = json.loads(raw or "{}")
+    except json.JSONDecodeError as exc:
+        _emit(
+            state,
+            "llm_call",
+            f"LLM {stage} returned invalid JSON",
+            stage=stage,
+            ok=False,
+            error=str(exc),
+            response_chars=len(raw or ""),
+        )
+        raise
+    if not isinstance(data, dict):
+        _emit(
+            state,
+            "llm_call",
+            f"LLM {stage} returned non-object JSON",
+            stage=stage,
+            ok=False,
+            response_chars=len(raw or ""),
+        )
+        raise ValueError("LLM stage must return a JSON object")
+    _emit(
+        state,
+        "llm_call",
+        f"LLM {stage} completed",
+        stage=stage,
+        ok=True,
+        response_chars=len(raw or ""),
+    )
+    return data
 
 
 def _parse_implement_files(payload: dict[str, Any]) -> list[tuple[str, str]]:
@@ -174,7 +235,11 @@ class MacsGraphRunner:
             )
         graph = self._build_graph()
         compiled: CompiledStateGraph[PipelineState] = graph.compile()
-        final = cast(PipelineState, compiled.invoke(state))
+        try:
+            final = cast(PipelineState, compiled.invoke(state))
+        except Exception as exc:
+            _fail_pipeline(state, f"pipeline error: {exc}")
+            return
         _persist_status(artifacts, final)
 
     def _build_graph(self) -> StateGraph[PipelineState]:
@@ -265,6 +330,7 @@ class MacsGraphRunner:
                 '"reconciler","implementers","reviewer"]}. '
                 "Pick 1-2 modules that fit the goal.\n"
             ),
+            state,
         )
         modules = list(planned.get("modules") or ["app"])
         truncated = modules[MAX_MODULE_FANOUT:]
@@ -302,6 +368,7 @@ class MacsGraphRunner:
                 "non_goals (string[]), modules (string[]). "
                 "Keep it thin; owner must be one of the planned modules.\n"
             ),
+            state,
         )
         modules = list((state.get("work_graph") or {}).get("modules") or contract.get("modules") or ["app"])
         contract["modules"] = modules
@@ -332,6 +399,7 @@ class MacsGraphRunner:
                     '"dependency_direction":[{"from","to"}]}. '
                     f"Design only module {module!r}; set api.owner to that module.\n"
                 ),
+                state,
             )
             design["module"] = module
             _write_json(designs_dir / f"{module}.json", design)
@@ -371,6 +439,7 @@ class MacsGraphRunner:
                     '{"resolved":true|false,"apis":[{"name","owner","shape"}],'
                     '"notes":"..."}. Prefer resolving when possible.\n'
                 ),
+                state,
             )
             frozen = {
                 "modules": [d.get("module") for d in designs],
@@ -525,35 +594,24 @@ class MacsGraphRunner:
                         "Write real Python source for this module only; "
                         "do not use placeholder markdown as the sole deliverable.\n"
                     ),
+                    state,
                 )
-            except (json.JSONDecodeError, ValueError, TypeError) as exc:
-                failed: PipelineState = {
-                    **state,
-                    "status": STATUS_FAILED,
-                    "waiting_for_human": False,
-                    "phase": "failed",
-                    "error": f"implement LLM response invalid for {task_id}: {exc}",
-                }
-                _persist_status(artifacts, failed)
-                _emit(failed, "run_terminal", "implement failed", status=STATUS_FAILED)
-                return failed
+            except Exception as exc:
+                return _fail_pipeline(
+                    state,
+                    f"implement LLM failed for {task_id}: {exc}",
+                )
             files = _parse_implement_files(payload)
             usable = [(p, c) for p, c in files if str(c).strip()]
             py_files = [(p, c) for p, c in usable if p.endswith(".py")]
             if not py_files:
-                failed = {
-                    **state,
-                    "status": STATUS_FAILED,
-                    "waiting_for_human": False,
-                    "phase": "failed",
-                    "error": (
+                return _fail_pipeline(
+                    state,
+                    (
                         f"implement produced no usable Python source for {task_id} "
                         "(refusing placeholder-only success)"
                     ),
-                }
-                _persist_status(artifacts, failed)
-                _emit(failed, "run_terminal", "implement failed", status=STATUS_FAILED)
-                return failed
+                )
             written_paths: list[str] = []
             for rel, content in usable:
                 commit_file(path, rel, content, f"macs: {task_id} {rel}")

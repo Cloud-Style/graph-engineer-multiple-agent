@@ -4,7 +4,7 @@
 
 **Blocked by:** 07 — Run 事件审计日志；08 — Implementer 真写码
 
-**Status:** done
+Status: done
 
 - [x] CLI `--auto` 与/或 `MACS_AUTO_APPROVE` 任一开启即 auto；默认 interactive
 - [x] `run(..., auto_approve=False)`（或等价）可从库测通

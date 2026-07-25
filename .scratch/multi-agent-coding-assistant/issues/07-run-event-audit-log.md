@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** done
+Status: done
 
 - [x] `runs/<run-id>/` 下存在追加写入的事件日志文件（如 JSONL）
 - [x] 日志条目含时间戳、run_id、事件类型、简短摘要
