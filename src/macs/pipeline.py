@@ -350,7 +350,7 @@ class MacsGraphRunner:
             ],
         }
         _write_json(artifacts / "work_graph.json", work_graph)
-        updated = {**state, "work_graph": work_graph, "phase": "contracts"}
+        updated: PipelineState = {**state, "work_graph": work_graph, "phase": "contracts"}
         _emit(updated, "phase_completed", "orchestrator planned work graph", phase="orchestrator")
         return updated
 
@@ -375,7 +375,7 @@ class MacsGraphRunner:
         for key in ("boundaries", "apis", "entities", "errors", "dependency_direction", "non_goals"):
             contract.setdefault(key, [])
         _write_json(artifacts / "contract.json", contract)
-        updated = {**state, "contract": contract, "phase": "module_designers"}
+        updated: PipelineState = {**state, "contract": contract, "phase": "module_designers"}
         _emit(updated, "phase_completed", "contracts authored", phase="contracts")
         return updated
 
@@ -405,7 +405,7 @@ class MacsGraphRunner:
             _write_json(designs_dir / f"{module}.json", design)
             designs.append(design)
         # Ensure no production code edits during design: only artifacts_dir writes.
-        updated = {**state, "designs": designs, "phase": "reconciler"}
+        updated: PipelineState = {**state, "designs": designs, "phase": "reconciler"}
         _emit(
             updated,
             "phase_completed",
@@ -464,7 +464,7 @@ class MacsGraphRunner:
             if mod
         ]
         _write_json(artifacts / "tasks.json", {"tasks": tasks})
-        updated = {
+        updated: PipelineState = {
             **state,
             "conflicts": conflicts,
             "frozen_design": frozen,
