@@ -2,7 +2,21 @@
 
 **实验性 / 学习向**的多 Agent 编码助手（图编排）。本地 CLI，对外接缝只有 `run` / `resume`。
 
-> 这不是能替你写生产代码的工具。它是一份约 2500 行的参考实现，用来理解：多 Agent 编码系统该怎么分角色、怎么传信息、怎么存状态、怎么解冲突、怎么做人闸。
+> 这不是能替你写生产代码的工具。它是一份对照实现：用来理解多 Agent 编码协作会撞上什么问题、常见怎么处理。  
+> **先读理论笔记，再对照代码与一次真实 run。**
+
+## 学习入口（先看这里）
+
+理论在 [`docs/learning/`](docs/learning/)：按「问题 → 方案 → 我们怎么做 → 代码在哪」组织。
+
+建议从这几篇开始：
+
+1. [为什么多 Agent 会失控](docs/learning/01-为什么多Agent会失控.md)
+2. [通信](docs/learning/02-通信.md)
+3. [图编排](docs/learning/03-图编排.md)
+4. [冲突](docs/learning/04-冲突.md)
+
+总目录与阅读顺序见 [docs/learning/README.md](docs/learning/README.md)。
 
 ## 它适合学什么
 
@@ -12,7 +26,7 @@
 - **确定性规则 + LLM**：冲突先程序检出，再 LLM 提案，高风险仍交人
 - **混合隔离**：只读可共享，写必须进独立 git worktree
 
-需求 → 拆票 → 实现 → 审查 的过程保留在 [`.scratch/multi-agent-coding-assistant/`](.scratch/multi-agent-coding-assistant/)。
+产品规格与拆票过程保留在 [`.scratch/multi-agent-coding-assistant/`](.scratch/multi-agent-coding-assistant/)（那是「做成什么」，不是理论主入口）。
 
 ## 它现在能做什么 / 不能做什么
 
